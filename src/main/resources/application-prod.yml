@@ -1,0 +1,63 @@
+# prod profile — every endpoint and credential comes from an environment
+# variable / external secret (RNF-05). No default value is provided on
+# purpose for secrets and endpoints: a missing env var must fail fast at
+# startup, not silently fall back to a dev value. See config/README.md for
+# the full list of environment variables this profile expects.
+spring:
+  datasource:
+    url: ${GSA_DB_URL}
+    username: ${GSA_DB_USERNAME}
+    password: ${GSA_DB_PASSWORD}
+  flyway:
+    url: ${GSA_DB_URL}
+    user: ${GSA_DB_USERNAME}
+    password: ${GSA_DB_PASSWORD}
+
+gsa:
+  kafka:
+    source:
+      bootstrap-servers: ${GSA_KAFKA_SOURCE_BOOTSTRAP_SERVERS}
+      security-protocol: SASL_SSL
+      sasl-mechanism: SCRAM-SHA-512
+      sasl-username: ${GSA_KAFKA_SOURCE_USERNAME}
+      sasl-password: ${GSA_KAFKA_SOURCE_PASSWORD}
+      # = partition count (6 prod, topologia-kafka.md)
+      concurrency: 6
+      max-poll-records: 500
+    destination:
+      bootstrap-servers: ${GSA_KAFKA_DESTINATION_BOOTSTRAP_SERVERS}
+      security-protocol: SASL_SSL
+      sasl-mechanism: SCRAM-SHA-512
+      sasl-username: ${GSA_KAFKA_DESTINATION_USERNAME}
+      sasl-password: ${GSA_KAFKA_DESTINATION_PASSWORD}
+      linger-millis: 10
+      batch-size: 32768
+
+  schema-registry:
+    url: ${GSA_SCHEMA_REGISTRY_URL}
+    basic-auth-user-info: ${GSA_SCHEMA_REGISTRY_CREDENTIALS}
+    # registered by a dedicated pipeline in prod, the app never auto-registers
+    # (contratti.md)
+    auto-register-schemas: false
+    use-latest-version: false
+
+  vault:
+    endpoint: ${GSA_VAULT_ENDPOINT}
+    connect-timeout: 5s
+    read-timeout: 15s
+    max-attempts: 3
+    backoff-initial: 1s
+    backoff-max: 30s
+
+  report:
+    xml-spool-directory: ${GSA_REPORT_SPOOL_DIR}
+
+  # Operational thresholds (nfr.md): to be tuned with devops once real traffic
+  # is observed; these are a starting point, not a final SLO.
+  alert-thresholds:
+    consumer-lag-threshold: 10000
+    backlog-age-threshold: 5m
+    case-record-rate-per-minute-threshold: 50
+    oldest-unsent-report-age-threshold: 30m
+    report-queue-length-threshold: 50
+    orphans-discarded-threshold: 20

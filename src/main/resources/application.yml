@@ -1,0 +1,102 @@
+# Base configuration, shared by every profile (application-dev.yml /
+# application-prod.yml). Only environment-agnostic values live here:
+# connection endpoints, credentials and anything that differs dev/prod
+# (RNF-16, alert thresholds, partition-driven concurrency, ...) is set per
+# profile. See config/README.md for the environment variables prod expects.
+#
+# Only two environments exist: dev and prod (RNF-09).
+spring:
+  application:
+    name: generic-service-adapter
+
+server:
+  # RNF-10: on SIGTERM, stop poll()ing and let in-flight messages complete
+  # publish + audit + ack before the context closes (ADR 0018).
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Scrape endpoint for Prometheus + basic health/info (ADR 0017).
+        # Management port is not meant to be public: devops restricts access.
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # WP0 declares the target group composition per ADR 0018 before the
+      # underlying indicators exist (config/persistence, config/kafka,
+      # config/observability land in later WPs). Boot validates group
+      # membership eagerly at startup, so membership validation is disabled
+      # here; re-enable once every indicator below has a real contributor.
+      validate-group-membership: false
+      group:
+        # ADR 0018: readiness = DB reachable AND source Kafka reachable AND
+        # Flyway migrations applied. "db"/"flyway"/"kafka" are the Boot /
+        # Spring Kafka built-in indicator ids, wired once config/persistence
+        # and config/kafka exist.
+        readiness:
+          include: readinessState,db,flyway,kafka
+        # ADR 0018: destination cluster / Schema Registry / Vault reachability
+        # feeds the alerts, but must NOT flip readiness (avoids flapping while
+        # back-pressure is already handling the outage). Custom indicators
+        # (destinationKafka, schemaRegistry, vault) are added together with
+        # outbound/listener and outbound/vault in a later WP.
+        downstream:
+          include: destinationKafka,schemaRegistry,vault
+
+# ---------------------------------------------------------------------------
+# gsa.* — application @ConfigurationProperties (config/properties/*).
+# Values below are the ones identical across dev/prod (topic names, group
+# names, retry/orphan-hold/report timing policy, DB retention). Anything that
+# differs per environment (endpoints, credentials, concurrency, security
+# protocol, alert thresholds) is set in application-dev.yml / application-prod.yml.
+# No hardcoded value in the Java code (RF-15, RNF-09): everything is a key here.
+# ---------------------------------------------------------------------------
+gsa:
+  kafka:
+    source:
+      groups:
+        anagrafica: gsa-anagrafica
+        movimenti: gsa-movimenti
+        retry: gsa-retry
+      topics:
+        user-account-data: user-account-data
+        wallet-account-topup: wallet-account-topup
+        wallet-account-withdrawal: wallet-account-withdrawal
+    destination:
+      acks: all
+      enable-idempotence: true
+      max-in-flight-requests-per-connection: 5
+      topics:
+        user-account: UserAccount
+        wallet-movement: WalletMovement
+
+  datasource:
+    report-runner-lock-name: gsa_report_runner
+    # Technical retention (AD-retention-audit-window), not a business
+    # requirement (modello-dati.md); configurable per environment.
+    audit-retention-days: 30
+    case-record-retention-days: 30
+    orphan-movement-retention-days: 7
+    report-file-metadata-retention-days: 30
+
+  orphan-hold:
+    hold-timeout: 60s
+    reprocessor-interval: 15s
+    reprocessor-batch-size: 200
+
+  report:
+    schedule-interval: 15m
+    pending-report-threshold: 500
+    threshold-polling-interval: 30s
+    xml-file-retention: 7d
+    max-raw-payload-bytes: 65536
+
+  retry:
+    levels: 4
+    max-attempts: 4
+    backoff-initial: 1s
+    backoff-max: 30s
+    backoff-multiplier: 2.0

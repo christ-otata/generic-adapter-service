@@ -1,0 +1,63 @@
+# dev profile — local/plaintext, points at the services declared in
+# compose.yaml. Nothing here is a real secret: dev credentials are
+# throwaway values matching compose.yaml, safe to commit.
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/gsa?useSSL=false&allowPublicKeyRetrieval=true
+    username: gsa
+    password: gsa
+  flyway:
+    url: jdbc:mysql://localhost:3307/gsa?useSSL=false&allowPublicKeyRetrieval=true
+    user: gsa
+    password: gsa
+
+logging:
+  level:
+    it.generic_service_adapter: DEBUG
+
+gsa:
+  kafka:
+    source:
+      bootstrap-servers: localhost:19092
+      security-protocol: PLAINTEXT
+      sasl-mechanism:
+      sasl-username:
+      sasl-password:
+      # = partition count (3 dev, topologia-kafka.md)
+      concurrency: 3
+      max-poll-records: 200
+    destination:
+      bootstrap-servers: localhost:29092
+      security-protocol: PLAINTEXT
+      sasl-mechanism:
+      sasl-username:
+      sasl-password:
+      linger-millis: 5
+      batch-size: 16384
+
+  schema-registry:
+    url: http://localhost:8081
+    basic-auth-user-info:
+    # dev only: prod registers schemas via a dedicated pipeline (contratti.md)
+    auto-register-schemas: true
+    use-latest-version: false
+
+  vault:
+    endpoint: http://localhost:8888/report
+    connect-timeout: 2s
+    read-timeout: 5s
+    max-attempts: 3
+    backoff-initial: 500ms
+    backoff-max: 5s
+
+  report:
+    xml-spool-directory: ./data/report-spool
+
+  # Low thresholds on purpose, to observe the behaviour in dev (nfr.md).
+  alert-thresholds:
+    consumer-lag-threshold: 100
+    backlog-age-threshold: 30s
+    case-record-rate-per-minute-threshold: 5
+    oldest-unsent-report-age-threshold: 2m
+    report-queue-length-threshold: 5
+    orphans-discarded-threshold: 1
