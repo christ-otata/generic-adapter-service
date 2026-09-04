@@ -1,1 +1,91 @@
-services: {}
+services:
+
+  # Source Kafka cluster (single-node KRaft broker+controller). The app
+  # consumes user-account-data / wallet-account-topup / wallet-account-withdrawal
+  # and the *.retry.<n> topics from here (topologia-kafka.md, ADR 0006).
+  kafka-source:
+    image: apache/kafka:4.2.1
+    container_name: gsa-kafka-source
+    ports:
+      - "19092:19092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-source:9092,PLAINTEXT_HOST://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-source:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CLUSTER_ID: pQnfGSewTGC49XI9CiVlTg
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_NUM_PARTITIONS: 3
+
+  # Destination Kafka cluster. The app publishes UserAccount / WalletMovement
+  # Protobuf messages here (topologia-kafka.md). Distinct cluster, distinct
+  # ports, on purpose: source and destination MUST NOT be confused.
+  kafka-destination:
+    image: apache/kafka:4.2.1
+    container_name: gsa-kafka-destination
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-destination:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-destination:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CLUSTER_ID: Y8D2FyJDRQWo8ZnQZLPPKw
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_NUM_PARTITIONS: 3
+
+  # Confluent Schema Registry, pointed at the DESTINATION cluster only (ADR
+  # 0012): the outbound Protobuf serializer validates/registers schemas there.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.2.3
+    container_name: gsa-schema-registry
+    depends_on:
+      - kafka-destination
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka-destination:9092
+      SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL: PLAINTEXT
+
+  # Single store for the anagraphic registry, orphan movements, case records,
+  # report_file metadata and audit (modello-dati.md). Mapped to host port 3307
+  # (not 3306) so it does not collide with a MySQL 8.0 instance the developer
+  # may already have running locally (nfr.md dev note). MySQL 8.0's default
+  # caching_sha2_password auth plugin is used as-is: mysql-connector-j 9.x
+  # (pulled in by Spring Boot 4.1.1) supports it natively, no
+  # --default-authentication-plugin override needed.
+  mysql:
+    image: mysql:8.0.46
+    container_name: gsa-mysql
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_DATABASE: gsa
+      MYSQL_USER: gsa
+      MYSQL_PASSWORD: gsa
+      MYSQL_ROOT_PASSWORD: root
+
+  # HTTP Vault mock (ADR 0016): an echo server that answers 2xx to any
+  # request, POST included. No real Vault contract exists (portfolio
+  # project, no real counterpart) — see docs/architettura/nfr.md.
+  vault-mock:
+    image: mendhak/http-https-echo:41
+    container_name: gsa-vault-mock
+    ports:
+      - "8888:8080"
+    environment:
+      HTTP_PORT: 8080
