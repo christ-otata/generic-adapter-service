@@ -34,3 +34,7 @@ build/
 
 ### Claude Code ###
 .claude/settings.local.json
+
+### Local dev runtime data ###
+# XML report spool bind mount (gsa.report.xml-spool-directory, dev profile)
+/data/
