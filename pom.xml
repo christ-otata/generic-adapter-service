@@ -199,6 +199,24 @@
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 			</plugin>
+			<!-- No prior Failsafe/Surefire convention existed in this pom (WP0/WP1
+			     start): binds the default *IT.java naming convention to the standard
+			     integration-test/verify phases, so `./mvnw verify` runs the
+			     Testcontainers-based tests while plain `./mvnw test` (Surefire, whose
+			     default include patterns do not match *IT.java) stays Docker-free.
+			     adapter-dev: keep using the *IT.java suffix for Docker-backed tests. -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-failsafe-plugin</artifactId>
+				<executions>
+					<execution>
+						<goals>
+							<goal>integration-test</goal>
+							<goal>verify</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
