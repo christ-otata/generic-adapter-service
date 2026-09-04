@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+// Contract owned by this repository (RF-06). Shape fixed by ADR 0013 / 0014;
+// detail documented in docs/architettura/contratti.md §1.
+package it.generic_service_adapter.contract.v1;
+
+import "common.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_package = "it.generic_service_adapter.contract.v1";
+option java_multiple_files = true;
+
+// Topic `UserAccount`, Kafka key = user_id.
+message UserAccount {
+  string user_id = 1; // = Kafka key
+  repeated Account accounts = 2; // 1:N relation, reflects the event (ADR 0014)
+  string first_name = 3;
+  string last_name = 4;
+  string full_name = 5; // derived: first_name + " " + last_name, normalized
+  string fiscal_code = 6; // in clear in the message (masked only in the logs)
+  string email = 7;
+  string phone = 8;
+  UserStatus status = 9;
+  EventType event_type = 10;
+  int64 version = 11; // pass-through, orders the events per user_id
+  google.protobuf.Timestamp event_time = 12; // from eventTimestamp ISO-8601
+  google.protobuf.Timestamp ingestion_time = 13; // set by the adapter
+  string source = 14; // constant: adapter + source topic
+  string processing_id = 15; // processing id (correlation with audit / case record)
+}

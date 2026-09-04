@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+// Contract owned by this repository (RF-06). Shape fixed by ADR 0013;
+// detail documented in docs/architettura/contratti.md §1.
+package it.generic_service_adapter.contract.v1;
+
+import "common.proto";
+import "google/protobuf/timestamp.proto";
+import "google/type/date.proto";
+
+option java_package = "it.generic_service_adapter.contract.v1";
+option java_multiple_files = true;
+
+// Topic `WalletMovement`, Kafka key = account_id.
+message WalletMovement {
+  string transaction_id = 1;
+  string user_id = 2;
+  string account_id = 3; // = Kafka key
+  Money amount = 4;
+  Direction direction = 5; // CREDIT (topup) / DEBIT (withdrawal)
+  string channel = 6; // informational (e.g. BANK_TRANSFER, CARD)
+  google.protobuf.Timestamp event_time = 7; // from eventTimestamp ISO-8601
+  google.type.Date value_date = 8; // from valueDate ISO-8601 (date only)
+  google.protobuf.Timestamp ingestion_time = 9;
+  string source = 10;
+  string processing_id = 11;
+
+  // Informational withdrawal fields, pass-through if present (absent in the topup).
+  string authorization_id = 20;
+  string merchant = 21;
+  string reason = 22;
+}

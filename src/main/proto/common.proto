@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+// Contract owned by this repository (RF-06). Shape fixed by ADR 0013;
+// detail documented in docs/architettura/contratti.md §1.
+package it.generic_service_adapter.contract.v1;
+
+option java_package = "it.generic_service_adapter.contract.v1";
+option java_multiple_files = true;
+
+// Amount in the minor monetary unit. Never a float, never a decimal string
+// (RF-38, ADR 0013).
+message Money {
+  int64 minor_units = 1; // e.g. cents; can be 0, never negative where not allowed
+  string currency = 2; // ISO-4217, always uppercase (e.g. "EUR")
+}
+
+message Account {
+  string account_id = 1;
+  AccountStatus status = 2;
+}
+
+enum AccountStatus {
+  ACCOUNT_STATUS_UNSPECIFIED = 0; // explicit default for unknown values (RF-08)
+  ACCOUNT_STATUS_ACTIVE = 1;
+  ACCOUNT_STATUS_SUSPENDED = 2;
+  ACCOUNT_STATUS_CLOSED = 3;
+}
+
+enum UserStatus {
+  USER_STATUS_UNSPECIFIED = 0;
+  USER_STATUS_ACTIVE = 1;
+  USER_STATUS_SUSPENDED = 2;
+  USER_STATUS_CLOSED = 3;
+}
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_CREATED = 1;
+  EVENT_TYPE_UPDATED = 2;
+  EVENT_TYPE_CLOSED = 3;
+}
+
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_CREDIT = 1; // from wallet-account-topup
+  DIRECTION_DEBIT = 2; // from wallet-account-withdrawal
+}

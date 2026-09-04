@@ -250,10 +250,10 @@
 				<version>${protobuf-maven-plugin.version}</version>
 				<configuration>
 					<protocVersion>${protobuf-java.version}</protocVersion>
-					<!-- WP0 ships an empty src/main/proto/ (only .gitkeep): do not fail
-					     the build for the lack of sources yet. Flip back to the default
-					     (true) once the first .proto contract lands (WP1). -->
-					<failOnMissingSources>false</failOnMissingSources>
+					<!-- Real sources landed in WP1 (src/main/proto/*.proto): back to the
+					     plugin default, so a future accidental removal of the .proto
+					     sources fails the build instead of silently skipping codegen. -->
+					<failOnMissingSources>true</failOnMissingSources>
 				</configuration>
 				<executions>
 					<execution>
