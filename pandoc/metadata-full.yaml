@@ -1,0 +1,28 @@
+---
+title: "generic-service-adapter"
+subtitle: "Technical documentation — functional analysis, architecture, decisions"
+author: "generic-service-adapter"
+date: "2026-09-04"
+lang: en-US
+subject: "Technical documentation"
+keywords: [Kafka, Protobuf, adapter, architecture, ADR, functional analysis]
+
+# --- Eisvogel ---
+titlepage: true
+titlepage-color: "1F2430"
+titlepage-text-color: "FFFFFF"
+titlepage-rule-color: "5B8DEF"
+titlepage-rule-height: 2
+toc-own-page: true
+toc-title: "Contents"
+book: true
+listings-no-page-break: true
+footer-left: "generic-service-adapter"
+header-left: "Technical documentation"
+
+# --- layout ---
+geometry: "margin=2.2cm"
+fontsize: 10pt
+linestretch: 1.12
+table-use-row-colors: true
+...

@@ -1,0 +1,25 @@
+% Preamble condiviso per l'export PDF (Pandoc + Eisvogel).
+
+% Blocchi di codice: manda a capo le righe lunghe invece di sforare il margine.
+% Highlighting = blocchi con linguaggio; verbatim = blocchi senza linguaggio
+% (es. alberi di cartelle) — vanno spezzati entrambi.
+\usepackage{fvextra}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+\RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+
+% Micro-tipografia: riduce gli overfull e migliora la giustificazione.
+\usepackage{microtype}
+\setlength{\emergencystretch}{3em}
+
+% Tabelle un filo piu' piccole: piu' spazio per il testo, meno troncamenti.
+\usepackage{etoolbox}
+\AtBeginEnvironment{longtable}{\footnotesize}
+
+% Codice inline: consenti l'a-capo dopo ogni underscore (identificatori lunghi
+% tipo gsa_publish_latency_seconds nelle celle strette).
+\let\gsaoldunderscore\_
+\renewcommand{\_}{\gsaoldunderscore\allowbreak}
+
+% Link colorati.
+\definecolor{gsalink}{HTML}{2A4B8D}
+\hypersetup{colorlinks=true,linkcolor=gsalink,urlcolor=gsalink,citecolor=gsalink,filecolor=gsalink}

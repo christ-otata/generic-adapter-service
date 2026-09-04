@@ -1,0 +1,30 @@
+---
+title: "User profile and wallet movement ingestion"
+subtitle: "Functional analysis — Kafka → Kafka adapter"
+author: "generic-service-adapter"
+date: "2026-09-03"
+lang: en-US
+subject: "Functional analysis"
+keywords: [Kafka, Protobuf, adapter, functional analysis, requirements]
+
+# --- Eisvogel ---
+titlepage: true
+titlepage-color: "1F2430"
+titlepage-text-color: "FFFFFF"
+titlepage-rule-color: "5B8DEF"
+titlepage-rule-height: 2
+toc-own-page: true
+toc-title: "Contents"
+book: false
+listings-no-page-break: true
+footer-left: "generic-service-adapter"
+header-left: "Functional analysis"
+header-right: "Status: AGREED"
+
+# --- layout ---
+geometry: "margin=2.2cm"
+fontsize: 10pt
+linestretch: 1.12
+table-use-row-colors: true
+
+...
