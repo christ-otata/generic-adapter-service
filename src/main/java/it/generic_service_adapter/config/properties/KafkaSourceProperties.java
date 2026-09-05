@@ -18,6 +18,9 @@ import org.springframework.validation.annotation.Validated;
  * @param concurrency per-listener concurrency; equal to the partition count (3 dev / 6 prod)
  * @param maxPollRecords {@code max.poll.records}, tuned not to exceed the synchronous publish time
  *     of a batch
+ * @param autoOffsetReset {@code auto.offset.reset} for a brand-new consumer group; {@code earliest}
+ *     so a first deploy never skips already-produced source messages (RNF-03).
+ *     Environment-agnostic.
  * @param groups consumer-group names, one per listener role
  * @param topics source topic names
  */
@@ -31,6 +34,7 @@ public record KafkaSourceProperties(
     String saslPassword,
     @Positive int concurrency,
     @Positive int maxPollRecords,
+    @NotBlank String autoOffsetReset,
     @Valid ConsumerGroups groups,
     @Valid Topics topics) {
 

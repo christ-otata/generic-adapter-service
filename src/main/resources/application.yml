@@ -69,6 +69,9 @@ management:
 gsa:
   kafka:
     source:
+      # earliest: a first deploy of a new consumer group must not skip source
+      # messages produced before it joined (RNF-03). Same in dev and prod.
+      auto-offset-reset: earliest
       groups:
         anagrafica: gsa-anagrafica
         movimenti: gsa-movimenti
@@ -112,3 +115,8 @@ gsa:
     backoff-initial: 1s
     backoff-max: 30s
     backoff-multiplier: 2.0
+
+  mapping:
+    # Constant written to UserAccount.source (contratti.md §2 Flow A). Not
+    # hardcoded in the mapper (RF-07); environment-agnostic.
+    user-account-source: generic-service-adapter/user-account-data
