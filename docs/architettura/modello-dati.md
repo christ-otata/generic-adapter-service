@@ -96,7 +96,8 @@ erDiagram
     }
     AUDIT {
         CHAR(36)     id PK
-        DATETIME(6)  published_at PK "partition column"
+        DATETIME(6)  published_at "full-precision publish timestamp (traceability/ordering)"
+        DATE         published_date PK "GENERATED: DATE(published_at), partition column"
         CHAR(36)     processing_id
         VARCHAR(255) source_topic
         INT          source_partition
@@ -129,23 +130,31 @@ upsert, guarded updates, state machines) is identical.
 1. **Movement deduplication — no partial unique index.** MySQL has no partial
    unique indexes with a predicate. Replacement: a **generated** column
    `txn_dedup VARCHAR(64) GENERATED ALWAYS AS (IF(message_type = 'WALLET_MOVEMENT',
-   transaction_id, NULL)) STORED` + a `UNIQUE (txn_dedup, published_at)`
-   constraint. Multiple `NULL`s are allowed in a MySQL `UNIQUE`, so the registry
-   rows (`txn_dedup` = `NULL`) do not enter the constraint.
-   *Consequence:* the partition column `published_at` **must** be part of the
-   constraint, so deduplication is at **partition granularity** (per day): a
-   replay of the same `transaction_id` on the same day is blocked
-   (skip-republish); a replay several days apart may republish, but the
-   downstream stays idempotent on `transaction_id` (RF-30, ADR 0009) and, in any
-   case, after 30 days the original row has been removed by retention.
+   transaction_id, NULL)) STORED` + a **second generated** column
+   `published_date DATE GENERATED ALWAYS AS (DATE(published_at)) STORED`
+   (UTC calendar date truncated from `published_at`) + a
+   `UNIQUE (txn_dedup, published_date)` constraint. Multiple `NULL`s are allowed
+   in a MySQL `UNIQUE`, so the registry rows (`txn_dedup` = `NULL`) do not enter
+   the constraint.
+   *Consequence:* deduplication is at exact **calendar-day granularity**: a
+   replay of the same `transaction_id` on the same day — at any exact
+   `published_at` instant within that day — is blocked (skip-republish); a
+   replay on a different day may republish, but the downstream stays idempotent
+   on `transaction_id` (RF-30, ADR 0009) and, in any case, after 30 days the
+   original row has been removed by retention.
    *Alternative:* a non-partitioned table `movement_dedup(transaction_id PK)`
    written in the **same local tx** as the audit (exact global dedup, one extra
    write). **The generated column is recommended**; `movement_dedup` if strict
    global dedup is required.
 2. **Composite PK for partitioning.** In MySQL every `PRIMARY` / `UNIQUE` key of a
    partitioned table must include **all** the columns of the partition function.
-   So: `audit` PK `(id, published_at)`, `case_record` PK `(id, created_at)`, and
-   `UNIQUE (txn_dedup, published_at)` on `audit`.
+   `audit` is partitioned directly on the generated `published_date` column
+   (`PARTITION BY RANGE COLUMNS (published_date)`), which also happens to be the
+   dedup-granularity column from point 1 above: `audit` PK `(id, published_date)`,
+   `UNIQUE (txn_dedup, published_date)`, and `case_record` PK `(id, created_at)`
+   (partitioned by `PARTITION BY RANGE (TO_DAYS(created_at))`, unchanged —
+   `case_record` has no analogous dedup key). `published_at` remains a normal,
+   full-precision, non-key column on `audit` for traceability/ordering.
 3. **No FK on partitioned tables.** `case_record` is partitioned → the link
    `case_record.report_file_id → report_file.id` is a **logical reference**
    enforced by the application, not an FK constraint. `report_file` is not
@@ -250,7 +259,7 @@ stateDiagram-v2
 | `orphan_movement` | PK `id`; `idx_orphan_due (state, hold_deadline)`; `idx_orphan_key (state, account_id)` | selection of rows to re-check; lookup by account |
 | `case_record` | **PK `(id, created_at)`**; `idx_case_pending (case_state, created_at)`; `idx_case_file (report_file_id)` | partitioning; selection for the report; logical join with `report_file` |
 | `report_file` | PK `id`; `idx_report_queue (state, next_attempt_at)`; `idx_report_purge (state, purge_after)` | send queue; pruning |
-| `audit` | **PK `(id, published_at)`**; `idx_audit_origin (source_topic, source_partition, source_offset)` **non-unique** (RNF-11); **`UNIQUE (txn_dedup, published_at)`** | physical traceability; movement skip-republish (ADR 0009) |
+| `audit` | **PK `(id, published_date)`**; `idx_audit_origin (source_topic, source_partition, source_offset)` **non-unique** (RNF-11); **`UNIQUE (txn_dedup, published_date)`** | physical traceability; movement skip-republish at calendar-day granularity (ADR 0009) |
 
 - MySQL has no **partial** unique indexes: the "movements only" selectivity is
   obtained with the generated column `txn_dedup` (`NULL` for the registry) — see
@@ -269,7 +278,7 @@ stateDiagram-v2
 | `orphan_movement` | 7 days from `RESOLVED` / `EXPIRED` (per environment) | scheduled batch `DELETE`; low volume, no partitioning |
 | `case_record` | **30 days** (per environment) | `PARTITION BY RANGE (TO_DAYS(created_at))`, daily partition, `ALTER TABLE case_record DROP PARTITION` for the expired partitions |
 | `report_file` | **30 days** (per environment) | scheduled batch `DELETE`; low volume, no partitioning |
-| `audit` | **30 days** (per environment) | `PARTITION BY RANGE (TO_DAYS(published_at))`, daily partition, `ALTER TABLE audit DROP PARTITION`. At 100 msg/s ≈ 8.6 M rows/day |
+| `audit` | **30 days** (per environment) | `PARTITION BY RANGE COLUMNS (published_date)` (generated `DATE(published_at)` column), daily partition, `ALTER TABLE audit DROP PARTITION`. At 100 msg/s ≈ 8.6 M rows/day |
 | XML files on the volume | **7 days** after `SENT` (per environment) | pruning → `report_file.state = 'PURGED'` (RF-36, RNF-18) |
 
 - The **30-day** retention for `audit` and `case_record` is a **technical
@@ -298,9 +307,10 @@ stateDiagram-v2
 - An orphan movement not resolved within `holdTimeout` with the destination
   reachable: `orphan_movement.state = 'EXPIRED'`, one `case_record` with
   `error_category = 'E4'`.
-- An upstream replay of the same `transaction_id` **on the same day** does not
-  create a second row in `audit` (`UNIQUE (txn_dedup, published_at)` constraint)
-  and is not republished.
+- An upstream replay of the same `transaction_id` **on the same day** (any
+  `published_at` instant within that UTC calendar date) does not create a
+  second row in `audit` (`UNIQUE (txn_dedup, published_date)` constraint) and
+  is not republished.
 
 > Updated 2026-09-04: MySQL 8.0 retarget from PostgreSQL (documents only; the SQL
 > scripts are produced by `adapter-dev`).

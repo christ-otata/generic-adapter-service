@@ -35,13 +35,14 @@ import org.testcontainers.utility.DockerImageName;
  *   <li>the migration succeeds and is recorded in {@code flyway_schema_history};
  *   <li>{@code case_record} and {@code audit} are actually partitioned (real rows in {@code
  *       information_schema.partitions}), per the "MySQL 8.0 redesigns" §2 in modello-dati.md;
- *   <li>the {@code audit.txn_dedup} generated column + {@code UNIQUE (txn_dedup, published_at)}
- *       behave as documented in "MySQL 8.0 redesigns" §1: a duplicate {@code WALLET_MOVEMENT} with
- *       the same {@code transaction_id} AND the same {@code published_at} is rejected, a duplicate
- *       {@code transaction_id} with a different {@code published_at} is accepted, and two {@code
- *       USER_ACCOUNT} rows with the same {@code transaction_id} both succeed because {@code
- *       txn_dedup} is {@code NULL} for those (MySQL allows multiple {@code NULL}s in a {@code
- *       UNIQUE} key).
+ *   <li>the {@code audit.txn_dedup} generated column + {@code UNIQUE (txn_dedup, published_date)}
+ *       behave as documented in "MySQL 8.0 redesigns" §1, at **calendar-day** granularity: a
+ *       duplicate {@code WALLET_MOVEMENT} with the same {@code transaction_id} published twice on
+ *       the same UTC calendar day — even at two different exact instants — is rejected, a duplicate
+ *       {@code transaction_id} published on a different calendar day is accepted, and two {@code
+ *       USER_ACCOUNT} rows with the same {@code transaction_id} both succeed regardless of the date
+ *       because {@code txn_dedup} is {@code NULL} for those (MySQL allows multiple {@code NULL}s in
+ *       a {@code UNIQUE} key).
  * </ul>
  */
 @Testcontainers
@@ -109,11 +110,10 @@ class FlywayBaselineMigrationIT {
         null,
         null);
 
-    // Same transaction_id AND same published_at: the generated txn_dedup column resolves both
-    // rows to the identical (txn_dedup, published_at) tuple, the UNIQUE constraint rejects the
-    // second insert (upstream replay of the same message, e.g. redelivery without a committed
-    // offset). NOTE: MySQL enforces uniqueness on the exact tuple, not on a day-truncated value
-    // — see the [ASSUMPTION] note on published_at determinism in the migration/report.
+    // Same transaction_id AND same published_at: the generated txn_dedup/published_date columns
+    // resolve both rows to the identical (txn_dedup, published_date) tuple, the UNIQUE constraint
+    // rejects the second insert (upstream replay of the same message, e.g. redelivery without a
+    // committed offset).
     assertThatThrownBy(
             () ->
                 insertAuditRow(
@@ -129,15 +129,51 @@ class FlywayBaselineMigrationIT {
   }
 
   @Test
-  void auditAllowsDuplicateTransactionIdsOnDifferentPublishedAtAndForUserAccountRows()
+  void auditRejectsADuplicateWalletMovementWithTheSameTransactionIdOnTheSameCalendarDay()
+      throws Exception {
+    // Same UTC calendar day, two different exact instants (10:00:00.000001 and
+    // 23:59:59.999999): with the old exact-instant UNIQUE (txn_dedup, published_at) this second
+    // insert would have SUCCEEDED (the tuples differ). The generated published_date column
+    // (DATE(published_at)) truncates both rows to the same day, so UNIQUE (txn_dedup,
+    // published_date) now rejects the second insert, matching the day-granularity dedup
+    // documented in modello-dati.md's "Verifiable criteria".
+    LocalDateTime morning = LocalDateTime.of(2026, 9, 4, 10, 0, 0, 1_000);
+    LocalDateTime nightBefore = LocalDateTime.of(2026, 9, 4, 23, 59, 59, 999_999_000);
+    String transactionId = "txn-" + UUID.randomUUID();
+
+    insertAuditRow(
+        UUID.randomUUID().toString(),
+        morning,
+        "WALLET_MOVEMENT",
+        "WalletMovement",
+        transactionId,
+        null,
+        null);
+
+    assertThatThrownBy(
+            () ->
+                insertAuditRow(
+                    UUID.randomUUID().toString(),
+                    nightBefore,
+                    "WALLET_MOVEMENT",
+                    "WalletMovement",
+                    transactionId,
+                    null,
+                    null))
+        .isInstanceOf(SQLIntegrityConstraintViolationException.class)
+        .hasMessageContaining("uq_audit_txn_dedup");
+  }
+
+  @Test
+  void auditAllowsDuplicateTransactionIdsOnDifferentCalendarDaysAndForUserAccountRows()
       throws Exception {
     LocalDateTime day1 = LocalDateTime.of(2026, 9, 1, 8, 0, 0);
     LocalDateTime day2 = LocalDateTime.of(2026, 9, 2, 8, 0, 0);
     String transactionId = "txn-" + UUID.randomUUID();
 
-    // Different published_at (different partitions here, days apart) -> the composite
-    // (txn_dedup, published_at) unique key does not collide: a replay published at a distinct
-    // instant may republish (downstream stays idempotent on transaction_id, ADR 0009).
+    // Different calendar days -> the composite (txn_dedup, published_date) unique key does not
+    // collide: a replay published on a distinct day may republish (downstream stays idempotent
+    // on transaction_id, ADR 0009).
     insertAuditRow(
         UUID.randomUUID().toString(),
         day1,
@@ -157,8 +193,8 @@ class FlywayBaselineMigrationIT {
 
     // message_type = USER_ACCOUNT -> txn_dedup is generated as NULL regardless of
     // transaction_id, and MySQL UNIQUE allows any number of NULLs: both succeed even though
-    // they share the same (irrelevant) transaction_id and the same published_at as the first
-    // WALLET_MOVEMENT row above.
+    // they share the same (irrelevant) transaction_id and the same published_at/published_date
+    // as the first WALLET_MOVEMENT row above.
     insertAuditRow(
         UUID.randomUUID().toString(),
         day1,
