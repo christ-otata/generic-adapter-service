@@ -2,7 +2,6 @@ package it.generic_service_adapter.outbound.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import it.generic_service_adapter.domain.report.ReportFileRecord;
 import it.generic_service_adapter.domain.report.ReportFileState;
 import java.time.LocalDateTime;
@@ -18,6 +17,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
 import org.testcontainers.utility.DockerImageName;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Integration test — {@code *IT} suffix, run by {@code ./mvnw verify} (Failsafe). Requires Docker.
@@ -37,7 +37,7 @@ class JdbcReportFileStoreIT {
     MYSQL.start();
     PersistenceTestDatabases.migrate(MYSQL);
     jdbcTemplate = new NamedParameterJdbcTemplate(PersistenceTestDatabases.dataSource(MYSQL));
-    store = new JdbcReportFileStore(jdbcTemplate, new ObjectMapper());
+    store = new JdbcReportFileStore(jdbcTemplate, JsonMapper.builder().build());
   }
 
   @AfterAll

@@ -1,8 +1,5 @@
 package it.generic_service_adapter.outbound.persistence;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import it.generic_service_adapter.domain.report.ReportFileRecord;
 import it.generic_service_adapter.domain.report.ReportFileState;
 import it.generic_service_adapter.domain.report.ReportFileStore;
@@ -17,13 +14,16 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * {@link ReportFileStore} implementation on {@code report_file} (Spring Data JDBC, ADR 0011):
  * metadata only, the XML file content on the volume is {@code outbound/filestore} (later WP). The
- * two {@code JSON} count columns are serialized/deserialized here with Jackson ({@code
- * jackson-databind}, already a transitive compile dependency via {@code
- * spring-boot-starter-webmvc}, not a new one) — {@code domain/report} stays free of any JSON
+ * two {@code JSON} count columns are serialized/deserialized here with Jackson 3 ({@code
+ * tools.jackson}, the {@code ObjectMapper} Spring Boot 4 autoconfigures — already on the classpath
+ * via the Boot starters, not a new dependency) — {@code domain/report} stays free of any JSON
  * library import, only this adapter knows how {@code counts_by_category}/{@code counts_by_topic}
  * are stored.
  */
@@ -170,7 +170,7 @@ public class JdbcReportFileStore implements ReportFileStore {
   private String writeJson(Map<String, Integer> counts) {
     try {
       return objectMapper.writeValueAsString(counts);
-    } catch (JsonProcessingException e) {
+    } catch (JacksonException e) {
       // Programmer error (a Map<String, Integer> is always serializable): fail fast rather than
       // silently persisting a malformed report_file row.
       throw new IllegalStateException("Failed to serialize report_file counts to JSON", e);
@@ -180,7 +180,7 @@ public class JdbcReportFileStore implements ReportFileStore {
   private Map<String, Integer> readJson(String json) {
     try {
       return objectMapper.readValue(json, COUNTS_TYPE);
-    } catch (JsonProcessingException e) {
+    } catch (JacksonException e) {
       throw new IllegalStateException("Failed to deserialize report_file counts from JSON", e);
     }
   }
