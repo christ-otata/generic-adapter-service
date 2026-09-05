@@ -6,6 +6,7 @@ import it.generic_service_adapter.config.properties.AlertThresholdProperties;
 import it.generic_service_adapter.config.properties.DataSourceProperties;
 import it.generic_service_adapter.config.properties.KafkaDestinationProperties;
 import it.generic_service_adapter.config.properties.KafkaSourceProperties;
+import it.generic_service_adapter.config.properties.MappingProperties;
 import it.generic_service_adapter.config.properties.OrphanHoldProperties;
 import it.generic_service_adapter.config.properties.ReportProperties;
 import it.generic_service_adapter.config.properties.RetryProperties;
@@ -44,6 +45,7 @@ class GenericServiceAdapterApplicationTests {
     KafkaSourceProperties.class,
     KafkaDestinationProperties.class,
     SchemaRegistryProperties.class,
+    MappingProperties.class,
     DataSourceProperties.class,
     VaultProperties.class,
     OrphanHoldProperties.class,
@@ -56,6 +58,7 @@ class GenericServiceAdapterApplicationTests {
   @Autowired private KafkaSourceProperties kafkaSourceProperties;
   @Autowired private KafkaDestinationProperties kafkaDestinationProperties;
   @Autowired private SchemaRegistryProperties schemaRegistryProperties;
+  @Autowired private MappingProperties mappingProperties;
   @Autowired private DataSourceProperties dataSourceProperties;
   @Autowired private VaultProperties vaultProperties;
   @Autowired private OrphanHoldProperties orphanHoldProperties;
@@ -71,6 +74,7 @@ class GenericServiceAdapterApplicationTests {
     assertThat(kafkaSourceProperties.bootstrapServers()).isNotBlank();
     assertThat(kafkaDestinationProperties.bootstrapServers()).isNotBlank();
     assertThat(schemaRegistryProperties.url()).isNotBlank();
+    assertThat(mappingProperties.userAccountSource()).isNotBlank();
     assertThat(dataSourceProperties.reportRunnerLockName()).isNotBlank();
     assertThat(vaultProperties.endpoint()).isNotBlank();
     assertThat(orphanHoldProperties.holdTimeout()).isNotNull();
