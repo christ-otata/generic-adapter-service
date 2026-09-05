@@ -13,34 +13,45 @@ import it.generic_service_adapter.config.properties.SchemaRegistryProperties;
 import it.generic_service_adapter.config.properties.VaultProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 /**
- * WP0 note: no DB/Kafka/Vault/Schema-Registry actually runs in this test — it only proves the
- * context wires up and every {@code gsa.*} typed property binds and validates against the {@code
- * dev} profile. The real Spring Boot Kafka autoconfiguration does not eagerly connect at
- * context-refresh time, but {@code DataSourceAutoConfiguration} / {@code FlywayAutoConfiguration}
- * do (Hikari's default {@code initializationFailTimeout} validates a connection eagerly, and Flyway
- * migrates at startup): both are excluded here so {@code ./mvnw verify} stays green with no
- * external services running. Testcontainers-backed tests that exercise the real DataSource / Flyway
- * wiring belong to the WP that implements {@code config/persistence} (WP2).
+ * WP0 note, updated in WP2: no DB/Kafka/Vault/Schema-Registry actually runs in this test — it only
+ * proves every {@code gsa.*} typed property binds and validates against the {@code dev} profile.
+ *
+ * <p>Originally this loaded the real {@code GenericServiceAdapterApplication} (full component scan)
+ * with a {@code spring.autoconfigure.exclude} list covering {@code DataSourceAutoConfiguration} /
+ * {@code FlywayAutoConfiguration} (Hikari and Flyway both connect eagerly at context refresh). That
+ * stopped working once WP2 added real {@code @Repository} beans under {@code outbound/persistence}
+ * (they need a {@code NamedParameterJdbcTemplate}, which does not exist once {@code
+ * DataSourceAutoConfiguration} is excluded) — and the same problem will recur with every future
+ * {@code @KafkaListener}/{@code @Service} that needs live infrastructure. Scoping this test to a
+ * dedicated {@link PropertiesOnlyConfiguration} (no component scan, no auto-configuration at all)
+ * decouples it permanently from whatever beans the rest of the app accumulates: it binds exactly
+ * the {@code @ConfigurationProperties} types under test and nothing else. Testcontainers- backed
+ * tests that exercise the real DataSource / Flyway / persistence-adapter wiring live next to that
+ * code instead ({@code config/persistence}, {@code outbound/persistence}).
  */
-@SpringBootTest(
-    properties =
-        "spring.autoconfigure.exclude="
-            + "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,"
-            + "org.springframework.boot.jdbc.autoconfigure.DataSourceInitializationAutoConfiguration,"
-            + "org.springframework.boot.jdbc.autoconfigure.DataSourceTransactionManagerAutoConfiguration,"
-            + "org.springframework.boot.jdbc.autoconfigure.JdbcClientAutoConfiguration,"
-            + "org.springframework.boot.jdbc.autoconfigure.JdbcTemplateAutoConfiguration,"
-            + "org.springframework.boot.jdbc.autoconfigure.health.DataSourceHealthContributorAutoConfiguration,"
-            + "org.springframework.boot.jdbc.autoconfigure.metrics.DataSourcePoolMetricsAutoConfiguration,"
-            + "org.springframework.boot.data.jdbc.autoconfigure.DataJdbcRepositoriesAutoConfiguration,"
-            + "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration,"
-            + "org.springframework.boot.flyway.autoconfigure.FlywayEndpointAutoConfiguration")
+@SpringBootTest(classes = GenericServiceAdapterApplicationTests.PropertiesOnlyConfiguration.class)
 @ActiveProfiles("dev")
 class GenericServiceAdapterApplicationTests {
+
+  @SpringBootConfiguration
+  @EnableConfigurationProperties({
+    KafkaSourceProperties.class,
+    KafkaDestinationProperties.class,
+    SchemaRegistryProperties.class,
+    DataSourceProperties.class,
+    VaultProperties.class,
+    OrphanHoldProperties.class,
+    ReportProperties.class,
+    RetryProperties.class,
+    AlertThresholdProperties.class
+  })
+  static class PropertiesOnlyConfiguration {}
 
   @Autowired private KafkaSourceProperties kafkaSourceProperties;
   @Autowired private KafkaDestinationProperties kafkaDestinationProperties;
