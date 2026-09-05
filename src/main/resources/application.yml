@@ -8,6 +8,18 @@
 spring:
   application:
     name: generic-service-adapter
+  datasource:
+    hikari:
+      data-source-properties:
+        # mysql-connector-j defaults to JDBC-spec "matched rows" semantics for executeUpdate()
+        # (every WHERE-matched row counts as affected, even with no actual column change).
+        # JdbcAnagraphicRegistry's CAS upsert (outbound/persistence, WP2) needs the C-API
+        # "affected rows" semantics instead: INSERT ... ON DUPLICATE KEY UPDATE then reports 0
+        # affected rows when the CAS guard blocks the update (existing row set to its current
+        # values), 1 on insert, 2 on a real update — the exact "did it apply" signal that method
+        # returns with no separate SELECT. Environment-agnostic (both dev and prod URLs go through
+        # this same Hikari connection-property, regardless of what GSA_DB_URL itself contains).
+        useAffectedRows: true
 
 server:
   # RNF-10: on SIGTERM, stop poll()ing and let in-flight messages complete
