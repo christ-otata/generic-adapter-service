@@ -117,6 +117,9 @@ gsa:
     backoff-multiplier: 2.0
 
   mapping:
-    # Constant written to UserAccount.source (contratti.md §2 Flow A). Not
-    # hardcoded in the mapper (RF-07); environment-agnostic.
+    # Constants written to <message>.source (contratti.md §2). Not hardcoded in
+    # the mappers (RF-07); environment-agnostic. One explicit key per source
+    # topic so each matches contratti.md verbatim.
     user-account-source: generic-service-adapter/user-account-data
+    wallet-topup-source: generic-service-adapter/wallet-account-topup
+    wallet-withdrawal-source: generic-service-adapter/wallet-account-withdrawal

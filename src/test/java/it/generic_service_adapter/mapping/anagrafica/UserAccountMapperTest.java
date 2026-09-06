@@ -30,7 +30,12 @@ class UserAccountMapperTest {
   void setUp() {
     meterRegistry = new SimpleMeterRegistry();
     mapper =
-        new UserAccountMapper(new UnknownEnumCounter(meterRegistry), new MappingProperties(SOURCE));
+        new UserAccountMapper(
+            new UnknownEnumCounter(meterRegistry),
+            new MappingProperties(
+                SOURCE,
+                "generic-service-adapter/wallet-account-topup",
+                "generic-service-adapter/wallet-account-withdrawal"));
   }
 
   private static ProcessingContext ctx() {
