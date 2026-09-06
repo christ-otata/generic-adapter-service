@@ -7,6 +7,7 @@ import it.generic_service_adapter.domain.model.ErrorCategory;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -43,6 +44,27 @@ public class JdbcCaseStore implements CaseStore {
 
   private static final String SELECT_BY_ID =
       "SELECT * FROM case_record WHERE id = :id AND created_at = :createdAt";
+
+  // idx_case_pending (case_state, created_at): the batch ReportAssembler packs into one
+  // report_file.
+  private static final String SELECT_PENDING_REPORT =
+      """
+      SELECT * FROM case_record
+      WHERE case_state = 'PENDING_REPORT'
+      ORDER BY created_at ASC
+      LIMIT :limit
+      """;
+
+  private static final String COUNT_PENDING_REPORT =
+      "SELECT COUNT(*) FROM case_record WHERE case_state = 'PENDING_REPORT'";
+
+  // idx_case_file (report_file_id): guarded bulk IN_REPORT -> REPORTED after a 2xx from the Vault.
+  private static final String MARK_REPORTED_BY_FILE =
+      """
+      UPDATE case_record
+      SET case_state = 'REPORTED', state_changed_at = :stateChangedAt
+      WHERE report_file_id = :reportFileId AND case_state = 'IN_REPORT'
+      """;
 
   // Guarded transition: report_file_id only overwritten when the caller supplies a non-null
   // value (PENDING_REPORT -> IN_REPORT); COALESCE leaves it untouched otherwise, so
@@ -90,6 +112,28 @@ public class JdbcCaseStore implements CaseStore {
     MapSqlParameterSource params =
         new MapSqlParameterSource().addValue("id", id).addValue("createdAt", createdAt);
     return jdbcTemplate.query(SELECT_BY_ID, params, ROW_MAPPER).stream().findFirst();
+  }
+
+  @Override
+  public List<CaseRecord> selectPendingReport(int limit) {
+    return jdbcTemplate.query(
+        SELECT_PENDING_REPORT, new MapSqlParameterSource("limit", limit), ROW_MAPPER);
+  }
+
+  @Override
+  public long countPendingReport() {
+    Long count =
+        jdbcTemplate.queryForObject(COUNT_PENDING_REPORT, new MapSqlParameterSource(), Long.class);
+    return count == null ? 0L : count;
+  }
+
+  @Override
+  public int markReportedByFile(String reportFileId, LocalDateTime stateChangedAt) {
+    MapSqlParameterSource params =
+        new MapSqlParameterSource()
+            .addValue("reportFileId", reportFileId)
+            .addValue("stateChangedAt", stateChangedAt);
+    return jdbcTemplate.update(MARK_REPORTED_BY_FILE, params);
   }
 
   @Override

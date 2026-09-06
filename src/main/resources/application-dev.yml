@@ -59,6 +59,7 @@ gsa:
 
   report:
     xml-spool-directory: ./data/report-spool
+    environment: dev
 
   # Low thresholds on purpose, to observe the behaviour in dev (nfr.md).
   alert-thresholds:

@@ -57,6 +57,7 @@ gsa:
 
   report:
     xml-spool-directory: ${GSA_REPORT_SPOOL_DIR}
+    environment: prod
 
   # Operational thresholds (nfr.md): to be tuned with devops once real traffic
   # is observed; these are a starting point, not a final SLO.

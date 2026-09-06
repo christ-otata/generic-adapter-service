@@ -6,6 +6,7 @@ import it.generic_service_adapter.domain.casistica.CaseRecord;
 import it.generic_service_adapter.domain.casistica.CaseState;
 import it.generic_service_adapter.domain.model.ErrorCategory;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -49,11 +50,16 @@ class JdbcCaseStoreIT {
   }
 
   private static CaseRecord newPendingCase(String id, LocalDateTime createdAt) {
+    return newCase(id, createdAt, CaseState.PENDING_REPORT, null);
+  }
+
+  private static CaseRecord newCase(
+      String id, LocalDateTime createdAt, CaseState state, String reportFileId) {
     return new CaseRecord(
         id,
         createdAt,
-        CaseState.PENDING_REPORT,
-        null,
+        state,
+        reportFileId,
         ErrorCategory.E2,
         "structural validation failed",
         "wallet-account-topup",
@@ -70,6 +76,86 @@ class JdbcCaseStoreIT {
         createdAt,
         createdAt,
         createdAt);
+  }
+
+  @Test
+  void selectPendingReportReturnsOldestPendingRowsFirstUpToTheLimit() {
+    LocalDateTime base = LocalDateTime.of(2026, 9, 4, 10, 0, 0);
+    CaseRecord third = newPendingCase(UUID.randomUUID().toString(), base.plusMinutes(30));
+    CaseRecord first = newPendingCase(UUID.randomUUID().toString(), base.plusMinutes(10));
+    CaseRecord second = newPendingCase(UUID.randomUUID().toString(), base.plusMinutes(20));
+    CaseRecord alreadyInReport =
+        newCase(
+            UUID.randomUUID().toString(),
+            base.plusMinutes(5),
+            CaseState.IN_REPORT,
+            UUID.randomUUID().toString());
+    store.create(third);
+    store.create(first);
+    store.create(second);
+    store.create(alreadyInReport);
+
+    List<CaseRecord> batch = store.selectPendingReport(2);
+
+    assertThat(batch).extracting(CaseRecord::id).containsExactly(first.id(), second.id());
+  }
+
+  @Test
+  void countPendingReportCountsOnlyPendingReportRows() {
+    LocalDateTime base = LocalDateTime.of(2026, 9, 4, 10, 0, 0);
+    store.create(newPendingCase(UUID.randomUUID().toString(), base));
+    store.create(newPendingCase(UUID.randomUUID().toString(), base.plusMinutes(1)));
+    store.create(
+        newCase(
+            UUID.randomUUID().toString(),
+            base.plusMinutes(2),
+            CaseState.IN_REPORT,
+            UUID.randomUUID().toString()));
+    store.create(
+        newCase(
+            UUID.randomUUID().toString(),
+            base.plusMinutes(3),
+            CaseState.REPORTED,
+            UUID.randomUUID().toString()));
+
+    assertThat(store.countPendingReport()).isEqualTo(2L);
+  }
+
+  @Test
+  void markReportedByFileOnlyMovesInReportRowsOfThatFileAndReturnsTheCount() {
+    LocalDateTime base = LocalDateTime.of(2026, 9, 4, 10, 0, 0);
+    String fileA = UUID.randomUUID().toString();
+    String fileB = UUID.randomUUID().toString();
+    CaseRecord a1 = newCase(UUID.randomUUID().toString(), base, CaseState.IN_REPORT, fileA);
+    CaseRecord a2 =
+        newCase(UUID.randomUUID().toString(), base.plusMinutes(1), CaseState.IN_REPORT, fileA);
+    CaseRecord bInReport =
+        newCase(UUID.randomUUID().toString(), base.plusMinutes(2), CaseState.IN_REPORT, fileB);
+    CaseRecord aAlreadyReported =
+        newCase(UUID.randomUUID().toString(), base.plusMinutes(3), CaseState.REPORTED, fileA);
+    store.create(a1);
+    store.create(a2);
+    store.create(bInReport);
+    store.create(aAlreadyReported);
+    LocalDateTime reportedAt = LocalDateTime.of(2026, 9, 4, 12, 0, 0);
+
+    int moved = store.markReportedByFile(fileA, reportedAt);
+
+    assertThat(moved).isEqualTo(2);
+    assertThat(store.findById(a1.id(), a1.createdAt()).orElseThrow().caseState())
+        .isEqualTo(CaseState.REPORTED);
+    assertThat(store.findById(a2.id(), a2.createdAt()).orElseThrow().caseState())
+        .isEqualTo(CaseState.REPORTED);
+    assertThat(store.findById(a1.id(), a1.createdAt()).orElseThrow().stateChangedAt())
+        .isEqualTo(reportedAt);
+    assertThat(store.findById(bInReport.id(), bInReport.createdAt()).orElseThrow().caseState())
+        .isEqualTo(CaseState.IN_REPORT);
+    assertThat(
+            store
+                .findById(aAlreadyReported.id(), aAlreadyReported.createdAt())
+                .orElseThrow()
+                .stateChangedAt())
+        .isEqualTo(aAlreadyReported.createdAt());
   }
 
   @Test

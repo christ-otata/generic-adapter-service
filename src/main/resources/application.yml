@@ -108,6 +108,11 @@ gsa:
     threshold-polling-interval: 30s
     xml-file-retention: 7d
     max-raw-payload-bytes: 65536
+    assembly-batch-size: 500
+    send-batch-size: 100
+    # Placeholder default: application-dev.yml / application-prod.yml set the real
+    # environment tag written into the report <header>. Overridable via GSA_REPORT_ENVIRONMENT.
+    environment: ${GSA_REPORT_ENVIRONMENT:local}
 
   # Manual retry routing for E7 / E3 (ADR 0002 rewrite — no @RetryableTopic). levels == max-attempts
   # in every profile: *.retry.0 .. *.retry.<levels-1>, exhaustion case_record after the last.

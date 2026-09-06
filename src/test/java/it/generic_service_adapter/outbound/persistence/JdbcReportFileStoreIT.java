@@ -134,6 +134,44 @@ class JdbcReportFileStoreIT {
   }
 
   @Test
+  void countUnsentCountsOnlyPendingSendRows() {
+    LocalDateTime now = LocalDateTime.of(2026, 9, 4, 12, 0, 0);
+    store.create(newRecord(UUID.randomUUID().toString(), ReportFileState.PENDING_SEND, now, now));
+    store.create(
+        newRecord(
+            UUID.randomUUID().toString(), ReportFileState.PENDING_SEND, now.minusMinutes(5), now));
+    store.create(
+        newRecord(
+            UUID.randomUUID().toString(),
+            ReportFileState.SENT,
+            now.minusHours(1),
+            now.minusHours(1)));
+
+    assertThat(store.countUnsent()).isEqualTo(2L);
+  }
+
+  @Test
+  void oldestUnsentCreatedAtReturnsTheMinCreatedAtOfPendingSend_orEmpty() {
+    assertThat(store.oldestUnsentCreatedAt()).isEmpty();
+
+    LocalDateTime now = LocalDateTime.of(2026, 9, 4, 12, 0, 0);
+    LocalDateTime oldest = now.minusMinutes(30);
+    store.create(
+        newRecord(
+            UUID.randomUUID().toString(),
+            ReportFileState.SENT,
+            now.minusHours(2),
+            now.minusHours(2)));
+    store.create(
+        newRecord(
+            UUID.randomUUID().toString(), ReportFileState.PENDING_SEND, now.minusMinutes(10), now));
+    store.create(
+        newRecord(UUID.randomUUID().toString(), ReportFileState.PENDING_SEND, oldest, now));
+
+    assertThat(store.oldestUnsentCreatedAt()).contains(oldest);
+  }
+
+  @Test
   void markSentThenMarkPurgedRoundTrip() {
     LocalDateTime createdAt = LocalDateTime.of(2026, 9, 4, 12, 0, 0);
     ReportFileRecord record =

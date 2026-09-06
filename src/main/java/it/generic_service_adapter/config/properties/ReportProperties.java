@@ -20,6 +20,12 @@ import org.springframework.validation.annotation.Validated;
  * @param maxRawPayloadBytes {@code maxBytes} size limit applied to each {@code rawPayload} in the
  *     report (RF-34)
  * @param xmlSpoolDirectory filesystem path of the XML spool (bind mount in dev, PVC in prod)
+ * @param assemblyBatchSize max {@code PENDING_REPORT} case records packed into a single {@code
+ *     report_file}, default 500
+ * @param sendBatchSize max {@code report_file} rows processed per send/purge loop on one tick,
+ *     default 100
+ * @param environment environment tag written into the report {@code <header>} ({@code dev} / {@code
+ *     prod})
  */
 @ConfigurationProperties(prefix = "gsa.report")
 @Validated
@@ -29,4 +35,7 @@ public record ReportProperties(
     @NotNull Duration thresholdPollingInterval,
     @NotNull Duration xmlFileRetention,
     @Positive long maxRawPayloadBytes,
-    @NotBlank String xmlSpoolDirectory) {}
+    @NotBlank String xmlSpoolDirectory,
+    @Positive int assemblyBatchSize,
+    @Positive int sendBatchSize,
+    @NotBlank String environment) {}

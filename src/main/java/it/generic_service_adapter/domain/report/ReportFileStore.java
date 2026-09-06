@@ -27,6 +27,20 @@ public interface ReportFileStore {
   List<ReportFileRecord> selectDueForPurge(LocalDateTime now, int limit);
 
   /**
+   * {@code SELECT COUNT(*) FROM report_file WHERE state = 'PENDING_SEND'} — the length of the
+   * unsent queue, for the RF-23 backlog alert.
+   */
+  long countUnsent();
+
+  /**
+   * {@code SELECT MIN(created_at) FROM report_file WHERE state = 'PENDING_SEND'} — the age
+   * reference of the oldest unsent report, for the RF-23 backlog alert.
+   *
+   * @return empty when the unsent queue is empty
+   */
+  Optional<LocalDateTime> oldestUnsentCreatedAt();
+
+  /**
    * Guarded transition {@code PENDING_SEND -> SENT} after a {@code 2xx} from the Vault.
    *
    * @return {@code true} if applied; {@code false} if the row was no longer {@code PENDING_SEND}.

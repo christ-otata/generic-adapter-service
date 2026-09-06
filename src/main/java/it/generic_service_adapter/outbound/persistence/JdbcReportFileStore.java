@@ -81,6 +81,14 @@ public class JdbcReportFileStore implements ReportFileStore {
   private static final String MARK_PURGED =
       "UPDATE report_file SET state = 'PURGED' WHERE id = :id AND state = 'SENT'";
 
+  // RF-23 backlog alert: the unsent queue is exactly the PENDING_SEND rows (a SENT row that was
+  // later PURGED is not "unsent").
+  private static final String COUNT_UNSENT =
+      "SELECT COUNT(*) FROM report_file WHERE state = 'PENDING_SEND'";
+
+  private static final String OLDEST_UNSENT_CREATED_AT =
+      "SELECT MIN(created_at) FROM report_file WHERE state = 'PENDING_SEND'";
+
   private final NamedParameterJdbcTemplate jdbcTemplate;
   private final ObjectMapper objectMapper;
 
@@ -124,6 +132,19 @@ public class JdbcReportFileStore implements ReportFileStore {
   public List<ReportFileRecord> selectDueForPurge(LocalDateTime now, int limit) {
     MapSqlParameterSource params = new MapSqlParameterSource("now", now).addValue("limit", limit);
     return jdbcTemplate.query(SELECT_DUE_FOR_PURGE, params, this::mapRow);
+  }
+
+  @Override
+  public long countUnsent() {
+    Long count = jdbcTemplate.queryForObject(COUNT_UNSENT, new MapSqlParameterSource(), Long.class);
+    return count == null ? 0L : count;
+  }
+
+  @Override
+  public Optional<LocalDateTime> oldestUnsentCreatedAt() {
+    return Optional.ofNullable(
+        jdbcTemplate.queryForObject(
+            OLDEST_UNSENT_CREATED_AT, new MapSqlParameterSource(), LocalDateTime.class));
   }
 
   @Override

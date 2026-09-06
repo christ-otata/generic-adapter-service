@@ -437,6 +437,21 @@ class OrphanReprocessorTest {
     }
 
     @Override
+    public List<CaseRecord> selectPendingReport(int limit) {
+      return List.of();
+    }
+
+    @Override
+    public long countPendingReport() {
+      return 0L;
+    }
+
+    @Override
+    public int markReportedByFile(String reportFileId, LocalDateTime stateChangedAt) {
+      return 0;
+    }
+
+    @Override
     public boolean transitionState(
         String id,
         LocalDateTime createdAt,
