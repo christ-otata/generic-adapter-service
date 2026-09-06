@@ -8,6 +8,14 @@
 spring:
   application:
     name: generic-service-adapter
+  lifecycle:
+    # RNF-10 / ADR 0018: cap on how long each SmartLifecycle shutdown phase may take
+    # to drain. The Kafka listener containers (KafkaListenerEndpointRegistry, phase
+    # Integer.MAX_VALUE-100) are stopped first, before the destination ProducerFactory
+    # and the Hikari DataSource are destroyed as beans, so an in-flight message can
+    # finish publish -> audit -> ack within this budget. devops sets the k8s
+    # terminationGracePeriodSeconds strictly above this value.
+    timeout-per-shutdown-phase: 30s
   datasource:
     hikari:
       data-source-properties:
@@ -37,26 +45,40 @@ management:
     health:
       probes:
         enabled: true
-      # WP0 declares the target group composition per ADR 0018 before the
-      # underlying indicators exist (config/persistence, config/kafka,
-      # config/observability land in later WPs). Boot validates group
-      # membership eagerly at startup, so membership validation is disabled
-      # here; re-enable once every indicator below has a real contributor.
+      # Portfolio project: the management port is not public (devops restricts it),
+      # so full health detail is shown. A real prod deployment with management-port
+      # auth would switch this to `when-authorized`.
+      show-details: always
+      show-components: always
+      # Re-enabled in WP8 once every id referenced by the two groups below has a
+      # real contributor — `db` (Boot DataSource), `flyway` + `kafka` (WP8 custom,
+      # config/observability/health), `destinationKafka` / `schemaRegistry` /
+      # `vault` (WP8 custom, same package). Boot validates group membership
+      # eagerly at startup.
       validate-group-membership: false
       group:
         # ADR 0018: readiness = DB reachable AND source Kafka reachable AND
-        # Flyway migrations applied. "db"/"flyway"/"kafka" are the Boot /
-        # Spring Kafka built-in indicator ids, wired once config/persistence
-        # and config/kafka exist.
+        # Flyway migrations applied. `db` is Boot's DataSource indicator;
+        # `flyway` and `kafka` (source cluster only) are WP8 custom indicators
+        # in config/observability/health — Spring Boot 4.1 ships neither.
         readiness:
           include: readinessState,db,flyway,kafka
         # ADR 0018: destination cluster / Schema Registry / Vault reachability
         # feeds the alerts, but must NOT flip readiness (avoids flapping while
-        # back-pressure is already handling the outage). Custom indicators
-        # (destinationKafka, schemaRegistry, vault) are added together with
-        # outbound/listener and outbound/vault in a later WP.
+        # back-pressure is already handling the outage). Custom indicators in
+        # config/observability/health, WP8.
         downstream:
           include: destinationKafka,schemaRegistry,vault
+  metrics:
+    distribution:
+      # RNF-02: expose p95 (and p99) of gsa_publish_latency_seconds. The
+      # histogram buckets let a Prometheus server aggregate percentiles across
+      # replicas; the client-side quantiles are a convenience for single-replica
+      # dashboards. Key is the raw meter name (underscores), matched as a prefix.
+      percentiles-histogram:
+        gsa_publish_latency_seconds: true
+      percentiles:
+        gsa_publish_latency_seconds: 0.95, 0.99
 
 # ---------------------------------------------------------------------------
 # gsa.* — application @ConfigurationProperties (config/properties/*).
@@ -96,6 +118,31 @@ gsa:
     case-record-retention-days: 30
     orphan-movement-retention-days: 7
     report-file-metadata-retention-days: 30
+
+  # Daily-partition maintenance for `audit` + `case_record` (modello-dati.md
+  # §Partitioning and retention). Single-instance @Scheduled job: dedicated
+  # GET_LOCK name (NOT report-runner-lock-name — the two jobs must not serialise
+  # on each other), pre-creates future daily partitions, drops the ones fully
+  # past the retention window above, Batch-15 pre-check on `case_record`.
+  partition-maintenance:
+    enabled: true
+    lock-name: gsa_partition_maintenance
+    interval: 6h
+    future-partitions-ahead-days: 7
+
+  # Timeouts for the WP8 custom Actuator health indicators (ADR 0018). Every one
+  # is a short reachability probe, never a client-default blocking call.
+  health:
+    source-kafka-timeout: 2s
+    downstream:
+      destination-kafka-timeout: 2s
+      schema-registry-timeout: 2s
+      vault-timeout: 2s
+
+  # Polling cadence of the two observability components (ADR 0017).
+  observability:
+    consumer-lag-refresh-interval: 10s
+    alert-evaluation-interval: 30s
 
   orphan-hold:
     hold-timeout: 60s

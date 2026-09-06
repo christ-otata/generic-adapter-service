@@ -5,10 +5,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import it.generic_service_adapter.config.properties.AlertThresholdProperties;
 import it.generic_service_adapter.config.properties.BackPressureProperties;
 import it.generic_service_adapter.config.properties.DataSourceProperties;
+import it.generic_service_adapter.config.properties.HealthProbeProperties;
 import it.generic_service_adapter.config.properties.KafkaDestinationProperties;
 import it.generic_service_adapter.config.properties.KafkaSourceProperties;
 import it.generic_service_adapter.config.properties.MappingProperties;
+import it.generic_service_adapter.config.properties.ObservabilityProperties;
 import it.generic_service_adapter.config.properties.OrphanHoldProperties;
+import it.generic_service_adapter.config.properties.PartitionMaintenanceProperties;
 import it.generic_service_adapter.config.properties.ReportProperties;
 import it.generic_service_adapter.config.properties.RetryProperties;
 import it.generic_service_adapter.config.properties.SchemaRegistryProperties;
@@ -53,7 +56,10 @@ class GenericServiceAdapterApplicationTests {
     ReportProperties.class,
     RetryProperties.class,
     BackPressureProperties.class,
-    AlertThresholdProperties.class
+    AlertThresholdProperties.class,
+    PartitionMaintenanceProperties.class,
+    HealthProbeProperties.class,
+    ObservabilityProperties.class
   })
   static class PropertiesOnlyConfiguration {}
 
@@ -68,6 +74,9 @@ class GenericServiceAdapterApplicationTests {
   @Autowired private RetryProperties retryProperties;
   @Autowired private BackPressureProperties backPressureProperties;
   @Autowired private AlertThresholdProperties alertThresholdProperties;
+  @Autowired private PartitionMaintenanceProperties partitionMaintenanceProperties;
+  @Autowired private HealthProbeProperties healthProbeProperties;
+  @Autowired private ObservabilityProperties observabilityProperties;
 
   @Test
   void contextLoads() {
@@ -87,5 +96,11 @@ class GenericServiceAdapterApplicationTests {
     assertThat(retryProperties.retention()).isNotNull();
     assertThat(backPressureProperties.probe().adminTimeout()).isNotNull();
     assertThat(alertThresholdProperties.consumerLagThreshold()).isPositive();
+    assertThat(partitionMaintenanceProperties.lockName()).isNotBlank();
+    assertThat(partitionMaintenanceProperties.futurePartitionsAheadDays()).isPositive();
+    assertThat(healthProbeProperties.sourceKafkaTimeout()).isNotNull();
+    assertThat(healthProbeProperties.downstream().vaultTimeout()).isNotNull();
+    assertThat(observabilityProperties.consumerLagRefreshInterval()).isNotNull();
+    assertThat(observabilityProperties.alertEvaluationInterval()).isNotNull();
   }
 }
