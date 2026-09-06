@@ -38,7 +38,26 @@ public class JdbcAuditStore implements AuditStore {
          :destTopic, :messageType, :messageKey, :transactionId, :userId, :userVersion)
       """;
 
+  // Pre-publish dedup probe (ADR 0009). Filters on the generated dedup columns: txn_dedup is
+  // non-null only for WALLET_MOVEMENT rows, and published_date is DATE(published_at). UTC_DATE()
+  // is MySQL's current date in UTC regardless of the session time zone — the same calendar-day
+  // granularity as the uq_audit_txn_dedup race backstop. LIMIT 1: existence, not a count.
+  private static final String EXISTS_TODAY =
+      """
+      SELECT 1 FROM audit
+      WHERE txn_dedup = :transactionId AND published_date = UTC_DATE()
+      LIMIT 1
+      """;
+
   private final NamedParameterJdbcTemplate jdbcTemplate;
+
+  @Override
+  public boolean movementAlreadyRecordedToday(String transactionId) {
+    return !jdbcTemplate
+        .queryForList(
+            EXISTS_TODAY, new MapSqlParameterSource("transactionId", transactionId), Integer.class)
+        .isEmpty();
+  }
 
   @Override
   public AuditOutcome record(AuditRecord auditRecord) {

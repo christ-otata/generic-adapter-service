@@ -127,6 +127,26 @@ class JdbcAuditStoreIT {
     assertThat(second).isEqualTo(AuditOutcome.RECORDED);
   }
 
+  @Test
+  void movementAlreadyRecordedTodayIsTrueOnlyAfterAMovementRowExistsForToday() {
+    String transactionId = "txn-" + UUID.randomUUID();
+    assertThat(store.movementAlreadyRecordedToday(transactionId)).isFalse();
+
+    store.record(walletMovement(LocalDateTime.now(java.time.ZoneOffset.UTC), transactionId));
+
+    assertThat(store.movementAlreadyRecordedToday(transactionId)).isTrue();
+    assertThat(store.movementAlreadyRecordedToday("txn-" + UUID.randomUUID())).isFalse();
+  }
+
+  @Test
+  void movementAlreadyRecordedTodayIgnoresRowsFromOtherCalendarDays() {
+    String transactionId = "txn-" + UUID.randomUUID();
+    store.record(
+        walletMovement(LocalDateTime.now(java.time.ZoneOffset.UTC).minusDays(2), transactionId));
+
+    assertThat(store.movementAlreadyRecordedToday(transactionId)).isFalse();
+  }
+
   private static int countRows(String transactionId) {
     return jdbcTemplate.queryForObject(
         "SELECT COUNT(*) FROM audit WHERE transaction_id = :transactionId",

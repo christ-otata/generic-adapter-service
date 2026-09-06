@@ -15,4 +15,16 @@ public interface AuditStore {
    * is {@code NULL} for them, ADR 0009 — republished on every event, downstream stays idempotent).
    */
   AuditOutcome record(AuditRecord auditRecord);
+
+  /**
+   * Pre-publish skip-republish check (ADR 0009, flussi.md §b): is there already a {@code
+   * WALLET_MOVEMENT} {@code audit} row for {@code transactionId} on <b>today's</b> UTC calendar
+   * day? Reads the generated dedup columns directly ({@code txn_dedup = :transactionId AND
+   * published_date = UTC_DATE()}), so it is naturally scoped to movements. When {@code true} the
+   * orchestrator skips the map / publish / audit write entirely and just acks. This is an
+   * optimization, not the correctness guarantee: the {@code UNIQUE (txn_dedup, published_date)}
+   * constraint enforced by {@link #record(AuditRecord)} is the race backstop for two callers that
+   * pass this check concurrently.
+   */
+  boolean movementAlreadyRecordedToday(String transactionId);
 }
