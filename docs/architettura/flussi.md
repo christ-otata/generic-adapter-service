@@ -25,31 +25,43 @@ sequenceDiagram
     CM->>CM: parse JSON + structural validation (E1/E2)
     CM->>MA: validated payload + ProcessingContext
     MA->>MA: normalize, enum to default (RF-08), full_name, technical fields
-    MA->>REG: CAS: UPDATE anag_user SET last_version = :incoming WHERE last_version less than :incoming
-    alt version not greater (0 rows)
-        REG-->>MA: registry no-op (RF-31)
-    else version greater
-        REG-->>MA: registry updated + additive merge of accounts
-    end
     MA->>UAP: UserAccount (internal model) — always published (ASS-3)
     UAP->>SR: validate/register Protobuf schema (subject UserAccount-value)
     UAP->>KD: send(key=userId).get()  [synchronous, acks=all]
     KD-->>UAP: RecordMetadata
-    UAP->>AUD: local DB tx: INSERT audit (topic/partition/offset, user_id, user_version)
-    AUD-->>LA: ok
+    UAP-->>MA: publish confirmed
+    Note over MA,AUD: one local DB transaction opens only now (ADR 0008) and wraps only the DB writes
+    MA->>REG: CAS: UPDATE anag_user SET last_version = :incoming WHERE last_version less than :incoming
+    alt version greater (1 row updated)
+        REG->>REG: additive merge of accounts[] (RF-31)
+        REG-->>MA: registry updated
+    else version not greater (0 rows)
+        REG-->>MA: registry no-op — CAS matched 0 rows (RF-31)
+    end
+    MA->>AUD: INSERT audit (topic/partition/offset, user_id, user_version) (RF-29)
+    AUD-->>MA: ok — DB transaction commits
+    MA-->>LA: outcome = published and persisted
     LA->>K: ack MANUAL_IMMEDIATE (only now — RF-11)
 ```
 
-**Caption.** The `UserAccount` message is published for every event, even
-out-of-sequence ones; only the local registry ignores events with a non-greater
-`version`. The offset ack happens after a confirmed publish **and** the audit
-write.
+**Caption.** Mapping builds the `UserAccount` message and the publish to the
+destination topic happens **first**, synchronously (`send(key=userId).get()`,
+`acks=all`), for every event — including events carrying a stale `version`
+(ASS-3). Only **after** the publish is confirmed does a single local DB
+transaction open; it wraps only the DB writes: the `AnagraphicRegistry` CAS
+(`WHERE last_version < :incoming`), the additive `accounts[]` merge (only when the
+CAS updated a row) and the `audit` INSERT (RF-29). The offset
+`ack MANUAL_IMMEDIATE` is last, after that transaction commits (RF-11, ADR 0008).
+No transaction is ever held open across the network publish. The registry no-op
+path is a CAS that matched 0 rows inside the post-publish transaction; the
+message already published is unaffected.
 
 **Verifiable criteria.**
 
 - Valid event `userId=U1 version=5` → one record on `UserAccount` with
-  `user_id=U1 version=5 full_name` set, key `U1`; one `audit` row;
-  `anag_user(U1).last_version=5`; offset committed only afterwards.
+  `user_id=U1 version=5 full_name` set, key `U1`; one `audit` row (written in the
+  same post-publish transaction as the CAS); `anag_user(U1).last_version=5`;
+  offset committed only afterwards.
 - Second event `userId=U1 version=3` → `UserAccount` published again;
   `anag_user(U1).last_version` stays 5.
 
