@@ -75,8 +75,10 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class MovementEventProcessor {
 
-  static final String SKIPPED_METRIC = "gsa_movements_skipped_total";
-  static final String SKIP_REASON_SAME_DAY_REPLAY = "same_day_replay";
+  // public so the retry re-attempt path (inbound/retry, RetryTopicListener) bumps the very same
+  // counter/tag when it skips a same-day movement replay — one metric series, not two.
+  public static final String SKIPPED_METRIC = "gsa_movements_skipped_total";
+  public static final String SKIP_REASON_SAME_DAY_REPLAY = "same_day_replay";
 
   private final ProcessingContextFactory processingContextFactory;
   private final MovementEventParser movementEventParser;

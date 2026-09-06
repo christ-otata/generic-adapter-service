@@ -1,5 +1,6 @@
 package it.generic_service_adapter.inbound.retry;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import it.generic_service_adapter.config.kafka.RetryKafkaConfig;
 import it.generic_service_adapter.config.properties.KafkaSourceProperties;
 import it.generic_service_adapter.domain.backpressure.BackPressureController;
@@ -9,9 +10,12 @@ import it.generic_service_adapter.domain.model.MovementDirection;
 import it.generic_service_adapter.domain.model.ProcessingContext;
 import it.generic_service_adapter.domain.model.UserAccountRecord;
 import it.generic_service_adapter.domain.model.WalletMovementRecord;
+import it.generic_service_adapter.domain.publish.AuditStore;
 import it.generic_service_adapter.domain.publish.DestinationPublishException;
 import it.generic_service_adapter.domain.publish.MovementPublisher;
+import it.generic_service_adapter.domain.publish.PublishResult;
 import it.generic_service_adapter.domain.publish.UserAccountPublisher;
+import it.generic_service_adapter.inbound.anagrafica.RegistryCommit;
 import it.generic_service_adapter.inbound.common.BusinessKeys;
 import it.generic_service_adapter.inbound.common.DownstreamErrorClassifier;
 import it.generic_service_adapter.inbound.common.InboundCaseRecorder;
@@ -19,6 +23,8 @@ import it.generic_service_adapter.inbound.common.MovementEventParser;
 import it.generic_service_adapter.inbound.common.MovementParseResult;
 import it.generic_service_adapter.inbound.common.RegistryEventParser;
 import it.generic_service_adapter.inbound.common.RegistryParseResult;
+import it.generic_service_adapter.inbound.movimenti.MovementCommit;
+import it.generic_service_adapter.inbound.movimenti.MovementEventProcessor;
 import it.generic_service_adapter.mapping.anagrafica.UserAccountMapper;
 import it.generic_service_adapter.mapping.movimenti.MovementMapper;
 import java.nio.charset.StandardCharsets;
@@ -32,6 +38,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.Headers;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
@@ -63,9 +70,30 @@ import org.springframework.stereotype.Component;
  * UserAccountPublisher} / {@code MovementPublisher} as the live path):
  *
  * <ul>
- *   <li>publish OK → ack, no {@code case_record} (ADR 0002 / flussi §f). The retry path does
- *       <b>not</b> write an {@code audit} row / registry CAS — see the WP6 report {@code
- *       [ASSUMPTION]}.
+ *   <li>publish OK → <b>mirror the live path's post-publish persistence</b> (ADR 0008 + RF-29 +
+ *       RNF-11), then ack, no {@code case_record}:
+ *       <ul>
+ *         <li>{@code user-account-data} (registry event) → after the confirmed publish, {@link
+ *             RegistryCommit} opens one local DB transaction for the {@code anag_user} CAS ({@code
+ *             WHERE last_version < :incoming}, naturally idempotent — a no-op if the live path or
+ *             an earlier attempt already advanced the registry past this {@code version}), the
+ *             conditional additive {@code accounts[]} merge and the {@code audit} INSERT ({@code
+ *             message_type = USER_ACCOUNT}, source coords from the retry headers, a fresh {@code
+ *             processing_id}).
+ *         <li>movement → the same <b>pre-publish dedup</b> as the live path ({@code
+ *             AuditStore.movementAlreadyRecordedToday}): already recorded today → skip the publish,
+ *             bump {@code gsa_movements_skipped_total{reason=same_day_replay}}, ack. Otherwise
+ *             publish, then {@link MovementCommit} opens one local DB transaction for the {@code
+ *             audit} INSERT ({@code message_type = WALLET_MOVEMENT}); a {@code DUPLICATE} {@code
+ *             AuditOutcome} from the {@code UNIQUE (txn_dedup, published_date)} race backstop is a
+ *             normal return, still ack.
+ *       </ul>
+ *       The publish stays <b>outside</b> the transaction (ADR 0008): the commit bean is a separate
+ *       {@code @Component}, called across the bean boundary after {@code send().get()} returns —
+ *       exactly as the live orchestrators use it. A commit failure follows the live-path rules: a
+ *       connection-level {@link org.springframework.dao.DataAccessResourceFailureException} is the
+ *       MySQL back-pressure seam (→ {@code onDownstreamUnreachable}, no ack); anything else
+ *       propagates (no ack, redelivery). Never swallowed as "retry success".
  *   <li>re-parse now {@code Invalid} (a validation rule tightened since routing) → E2 {@code
  *       case_record} + ack (mirrors {@code OrphanReprocessor}).
  *   <li>publish fails, classified <b>E7</b>, {@code attempt+1 < maxAttempts} → {@code
@@ -100,9 +128,13 @@ public class RetryTopicListener {
   private final MovementMapper movementMapper;
   private final UserAccountPublisher userAccountPublisher;
   private final MovementPublisher movementPublisher;
+  private final RegistryCommit registryCommit;
+  private final MovementCommit movementCommit;
+  private final AuditStore auditStore;
   private final InboundCaseRecorder inboundCaseRecorder;
   private final DownstreamErrorClassifier downstreamErrorClassifier;
   private final BackPressureController backPressureController;
+  private final MeterRegistry meterRegistry;
   private final Clock clock;
 
   @KafkaListener(
@@ -154,8 +186,16 @@ public class RetryTopicListener {
     }
 
     try {
-      parsed.publish().run();
+      boolean published = parsed.publish().publishAndPersist();
       acknowledgment.acknowledge();
+      log.info(
+          "Retry re-attempt settled: origin={}-{}@{} attempt={} published={} processingId={}",
+          ctx.sourceTopic(),
+          ctx.sourcePartition(),
+          ctx.sourceOffset(),
+          attempt,
+          published,
+          ctx.processingId());
     } catch (DestinationPublishException e) {
       handleRetryFailure(
           record,
@@ -167,6 +207,12 @@ public class RetryTopicListener {
           parsed.keys(),
           e,
           acknowledgment);
+    } catch (DataAccessResourceFailureException dbUnreachable) {
+      // Post-publish commit hit a connection-level MySQL failure — same back-pressure seam as the
+      // live path (ADR 0007). No ack: the never-recover error handler seeks back; redelivered on
+      // resume. A commit failure is never swallowed as "retry success".
+      backPressureController.onDownstreamUnreachable(DownstreamKind.MYSQL, dbUnreachable);
+      throw dbUnreachable;
     }
   }
 
@@ -220,8 +266,7 @@ public class RetryTopicListener {
       }
       RegistryParseResult.Valid valid = (RegistryParseResult.Valid) result;
       UserAccountRecord model = userAccountMapper.toRecord(valid.event(), valid.eventTime(), ctx);
-      return new Parsed(
-          valid.businessKeys(), () -> userAccountPublisher.publish(model), null, null);
+      return new Parsed(valid.businessKeys(), () -> republishRegistry(model, ctx), null, null);
     }
 
     MovementDirection direction = directionFor(originalTopic);
@@ -233,7 +278,56 @@ public class RetryTopicListener {
     WalletMovementRecord model =
         movementMapper.toRecord(
             valid.event(), direction, valid.eventTime(), valid.valueDate(), ctx);
-    return new Parsed(valid.businessKeys(), () -> movementPublisher.publish(model), null, null);
+    return new Parsed(valid.businessKeys(), () -> republishMovement(model, ctx), null, null);
+  }
+
+  /**
+   * Re-attempt of a routed {@code user-account-data} record: publish the {@code UserAccount}, then
+   * — across the bean boundary, one local DB transaction opened only now (ADR 0008) — {@link
+   * RegistryCommit} does the {@code anag_user} CAS ({@code WHERE last_version < :incoming},
+   * naturally idempotent), the conditional additive {@code accounts[]} merge and the {@code audit}
+   * INSERT (RF-29, RNF-11). The CAS is a no-op if the live path or an earlier attempt already
+   * advanced the registry past this event's {@code version}.
+   */
+  private boolean republishRegistry(UserAccountRecord model, ProcessingContext ctx) {
+    PublishResult publish = userAccountPublisher.publish(model);
+    registryCommit.applyRegistryAndAudit(model, publish, ctx);
+    return true;
+  }
+
+  /**
+   * Re-attempt of a routed movement record: the same pre-publish skip-republish dedup as the live
+   * path ({@link AuditStore#movementAlreadyRecordedToday}). Already recorded today (live path or an
+   * earlier attempt published it) → no second publish, bump {@code gsa_movements_skipped_total},
+   * ack (ADR 0009). Otherwise publish, then {@link MovementCommit} writes the {@code audit} row in
+   * one local DB transaction (ADR 0008); a {@code DUPLICATE} outcome from the {@code UNIQUE
+   * (txn_dedup, published_date)} race backstop is a normal return.
+   *
+   * @return {@code true} when the movement was re-published, {@code false} when it was skipped as a
+   *     same-day replay
+   */
+  private boolean republishMovement(WalletMovementRecord model, ProcessingContext ctx) {
+    if (auditStore.movementAlreadyRecordedToday(model.transactionId())) {
+      meterRegistry
+          .counter(
+              MovementEventProcessor.SKIPPED_METRIC,
+              "reason",
+              MovementEventProcessor.SKIP_REASON_SAME_DAY_REPLAY)
+          .increment();
+      log.info(
+          "Retry skip-republish (same-day replay): transactionId={} already has a WALLET_MOVEMENT"
+              + " audit row for today — no re-publish, no audit write. origin={}-{}@{}"
+              + " processingId={}",
+          model.transactionId(),
+          ctx.sourceTopic(),
+          ctx.sourcePartition(),
+          ctx.sourceOffset(),
+          ctx.processingId());
+      return false;
+    }
+    PublishResult publish = movementPublisher.publish(model);
+    movementCommit.recordAudit(model, publish, ctx);
+    return true;
   }
 
   private MovementDirection directionFor(String originalTopic) {
@@ -258,14 +352,30 @@ public class RetryTopicListener {
   }
 
   /**
-   * Outcome of re-parsing a routed record: either a {@code publish} action to run, or an {@code
+   * Outcome of re-parsing a routed record: either a {@code publish} step to run, or an {@code
    * Invalid} classification ({@code publish == null}).
    */
   private record Parsed(
-      BusinessKeys keys, Runnable publish, ErrorCategory invalidCategory, String invalidDetail) {
+      BusinessKeys keys, PublishStep publish, ErrorCategory invalidCategory, String invalidDetail) {
 
     static Parsed invalid(BusinessKeys keys, ErrorCategory category, String detail) {
       return new Parsed(keys, null, category, detail);
     }
+  }
+
+  /**
+   * The confirmed-publish + post-publish persistence action for a re-attempt — a mirror of the live
+   * orchestrators: it publishes and then, across the bean boundary, invokes {@link RegistryCommit}
+   * (registry) or {@link MovementCommit} (movement, with the live path's pre-publish dedup). Only
+   * ever {@code null} on the {@code Invalid} branch.
+   */
+  @FunctionalInterface
+  private interface PublishStep {
+
+    /**
+     * @return {@code true} if the message was (re-)published, {@code false} if it was skipped as a
+     *     same-day movement replay
+     */
+    boolean publishAndPersist();
   }
 }
