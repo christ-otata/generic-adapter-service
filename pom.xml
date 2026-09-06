@@ -198,6 +198,19 @@
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+				<executions>
+					<!-- Generates target/classes/META-INF/build-info.properties at
+					     generate-resources, so Spring Boot autoconfigures a BuildProperties
+					     bean. ReportAssembler stamps the report <header> with
+					     BuildProperties.getVersion() as the adapter version (WP7 / ADR 0016).
+					     The default `repackage` execution from the parent POM still runs. -->
+					<execution>
+						<id>build-info</id>
+						<goals>
+							<goal>build-info</goal>
+						</goals>
+					</execution>
+				</executions>
 			</plugin>
 			<!-- No prior Failsafe/Surefire convention existed in this pom (WP0/WP1
 			     start): binds the default *IT.java naming convention to the standard
