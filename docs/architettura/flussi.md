@@ -169,6 +169,7 @@ sequenceDiagram
     participant BPC as BackPressureController
     participant REG as AnagraphicRegistry
     participant MVP as MovementPublisher
+    participant AUD as AuditStore
     participant CST as CaseStore
 
     CM->>OHS: movement with userId/accountId not in the registry
@@ -181,9 +182,18 @@ sequenceDiagram
         SCH->>REG: for each one: userId and accountId now present?
         alt registry appeared
             REG-->>SCH: yes
-            SCH->>MVP: process and publish WalletMovement (RF-27)
-            MVP-->>SCH: published
-            SCH->>OST: state = RESOLVED
+            SCH->>AUD: is there already a WALLET_MOVEMENT audit row for this transaction_id on today's published_date ? (pre-publish dedup check)
+            alt already recorded today by the live path
+                AUD-->>SCH: yes
+                SCH->>OST: state = RESOLVED (skip republish, no audit write)
+            else not yet recorded
+                AUD-->>SCH: no
+                SCH->>MVP: reconstruct and publish WalletMovement via port (RF-27)
+                MVP-->>SCH: publish confirmed
+                Note over SCH,AUD: one local DB transaction opens only now (ADR 0008) and wraps only the two DB writes below
+                SCH->>AUD: INSERT audit (WALLET_MOVEMENT, transaction_id, source coords, processing_id) (RF-29)
+                SCH->>OST: state = RESOLVED
+            end
         else not yet, within hold_deadline
             SCH->>OST: last_checked_at = now (stays HELD)
         else not yet, hold_deadline passed
@@ -200,16 +210,37 @@ sequenceDiagram
     end
 ```
 
-**Caption.** The grace period is a deadline on `orphan_movement.hold_deadline`,
-not an attempt count. During E6 back-pressure the deadline is **frozen**: no `E4`
-until consumption towards the destination is possible again (ADR 0003).
+**Caption.** `OrphanHoldService` does only the **hold**: it inserts the
+`orphan_movement` row (`state = HELD`, `hold_deadline = received_at +
+holdTimeout`) and the source offset is acked straight away (RF-26). Everything
+after is the scheduled `OrphanReprocessor`. The grace period is a deadline on
+`orphan_movement.hold_deadline`, not an attempt count. On a pass, for each `HELD`
+row whose `userId` and `accountId` are now in the registry, the scheduler first
+runs the **same pre-publish dedup check as Flow b** against `AuditStore`: if a
+`WALLET_MOVEMENT` `audit` row already exists for that `transaction_id` on today's
+`published_date`, the live movement path already published it — the scheduler
+does **not** republish, it just sets `RESOLVED`. Otherwise it reconstructs and
+publishes the `WalletMovement` through the `MovementPublisher` port (RF-27),
+synchronously; **only after** the publish is confirmed does it open one local DB
+transaction (ADR 0008) wrapping just two writes — the `audit` INSERT
+(`message_type = WALLET_MOVEMENT`, `transaction_id`, source coordinates, a fresh
+`processing_id`, RF-29) and `orphan_movement.state = RESOLVED`. The scheduler
+never acks a Kafka offset (it was committed at hold time). During E6
+back-pressure the deadline is **frozen**: no `E4` until consumption towards the
+destination is possible again (ADR 0003).
 
 **Verifiable criteria.**
 
 - topup with `A1` absent → not published immediately; one `orphan_movement` row
   `state=HELD`; the source-topic offset is committed; the partition continues.
 - Registry for `A1` within `holdTimeout` → on the next scheduler pass one
-  `WalletMovement CREDIT`; `orphan_movement.state=RESOLVED`; no `case_record`.
+  `WalletMovement CREDIT`; one `audit` row (`message_type=WALLET_MOVEMENT`,
+  `transaction_id` set), written in the post-publish transaction;
+  `orphan_movement.state=RESOLVED`; no `case_record`.
+- Registry for `A1` within `holdTimeout` but the live movement path already
+  published this `transaction_id` earlier the same day → on the next scheduler
+  pass no second `WalletMovement`, no second `audit` row;
+  `orphan_movement.state=RESOLVED`; no `case_record`.
 - No registry within `holdTimeout`, destination reachable → `case_record` with
   `error_category=E4`; `orphan_movement.state=EXPIRED`.
 - Expiry while E6 is active → no E4 `case_record` until E6 clears.

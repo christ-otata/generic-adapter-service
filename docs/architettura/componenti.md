@@ -3,7 +3,7 @@
 Internal decomposition of the single application. Design level:
 **components, boundaries, contracts** — not method signatures or function bodies.
 References: ADR [0001](adr/0001-strati-e-confini-componenti.md) (layers + ports),
-ADR [0003](adr/0003-grace-period-orfani-scheduler.md) (`OrphanHoldService`),
+ADR [0003](adr/0003-grace-period-orfani-scheduler.md) (`OrphanHoldService` hold + `OrphanReprocessor` pass),
 ADR [0007](adr/0007-back-pressure-e6.md) (`BackPressureController`),
 ADR [0016](adr/0016-report-runner-in-process.md) (report runner).
 
@@ -28,7 +28,7 @@ it.generic_service_adapter
 │   ├── anagrafica/                  @KafkaListener on user-account-data
 │   ├── movimenti/                   @KafkaListener on wallet-account-topup and -withdrawal
 │   ├── retry/                       @RetryableTopic listener of the .retry.<n> topics (E3/E7)
-│   ├── schedule/                    ReportRunner (@Scheduled) + OrphanReprocessor (@Scheduled)
+│   ├── schedule/                    ReportRunner (@Scheduled) + OrphanReprocessor (@Scheduled) + OrphanReprocessorCommit (tx boundary)
 │   └── common/                      JSON deserialization, structural validation, business-key extraction, E1..E7 classification
 │
 ├── mapping/                        JSON → internal model → Protobuf translation
@@ -118,7 +118,7 @@ flowchart TB
       LM["movimenti<br/>@KafkaListener (topup + withdrawal)"]
       LR["retry<br/>@RetryableTopic listener"]
       SR1["schedule/ReportRunner<br/>@Scheduled + GET_LOCK MySQL per tick"]
-      SR2["schedule/OrphanReprocessor<br/>@Scheduled every ~15s"]
+      SR2["schedule/OrphanReprocessor (+ OrphanReprocessorCommit)<br/>@Scheduled every ~15s"]
       CMN["common<br/>JSON deser + validation + E1..E7 classification"]
     end
 
@@ -158,9 +158,11 @@ flowchart TB
     MM --> OHS
     LR --> CMN
     OHS --> OST
-    OHS --> MVP
-    OHS --> CST
-    SR2 --> OHS
+    SR2 --> OST
+    SR2 --> REG
+    SR2 --> MVP
+    SR2 --> AUD
+    SR2 --> CST
     SR2 --> BPC
     MA --> UAP
     MM --> MVP
@@ -200,11 +202,11 @@ adapter.
 | Movimenti listener | `inbound/movimenti` | Consumes `wallet-account-topup` and `-withdrawal`, a single path, `direction` derived from the topic. | offsets of the two movement topics |
 | Retry listener | `inbound/retry` | Consumes the `.retry.<n>` topics (E3/E7), retries mapping+publish, on retry exhaustion requests the case record. | retry-topic offsets |
 | `ReportRunner` | `inbound/schedule` | 15-min tick + polling of the `PENDING_REPORT` count every ~30s; **single-instance** via MySQL application lock (`GET_LOCK('gsa_report_runner', 0)` acquired at the start of the tick, `RELEASE_LOCK` at the end of the tick); orchestrates generation + send (ADR 0016). | per-tick lock `gsa_report_runner`; `report_file` lifecycle |
-| `OrphanReprocessor` | `inbound/schedule` | Every ~15s picks up `orphan_movement` rows near expiry, delegates to `OrphanHoldService`, checks the back-pressure state before emitting `E4`. | scheduling of the orphan re-check |
+| `OrphanReprocessor` (+ `OrphanReprocessorCommit` tx boundary) | `inbound/schedule` | Scheduled pass every ~15s: per `HELD` `orphan_movement` row, re-checks `AnagraphicRegistry` and either **resolves** (re-parse → `AuditStore` dedup check → `MovementPublisher` publish → `audit` INSERT + `state=RESOLVED` in one post-publish tx) / **expires to E4** (`CaseStore` `case_record` + `state=EXPIRED` in one tx) / **freezes the hold** while `BackPressureController.isBackPressureActive()`. Drives `OrphanStore`, `AnagraphicRegistry`, `MovementPublisher`, `AuditStore`, `CaseStore` directly. | resolve / expire / freeze of held orphans |
 | `inbound/common` | `inbound/common` | JSON parsing, structural validation, `businessKeys` extraction, `E1..E7` classification, `ProcessingContext` construction (`topic/partition/offset`, `processing_id`). | inbound error taxonomy |
 | Anagrafica / movimenti mapper | `mapping/*` | Validated JSON → internal model → Protobuf message; enum→default with warning metric (RF-08); technical fields `ingestion_time` / `source` / `processing_id`. | transformation rules from §4 of the analysis |
 | `AnagraphicRegistry` | port in `domain/anagrafica`, impl in `outbound/persistence` | Existence read for `userId` / `accountId`; registry write with **CAS** `WHERE last_version < :incoming` (RF-31); additive merge of accounts (ADR 0014). | `anag_user`, `anag_account` |
-| `OrphanHoldService` | service in `domain/orfani` | Decides `known / unknown / expired` for an orphan movement; inserts into `orphan_movement` with `hold_deadline`; on resolution publishes, on expiry emits `E4` (ADR 0003). | "hold" state of the orphan movement |
+| `OrphanHoldService` | service in `domain/orfani` | **Hold half only**: on the RF-25 registry miss, parks the movement — one `INSERT` into `orphan_movement` (`state=HELD`, `hold_deadline = received_at + holdTimeout`, original payload + source metadata). No re-check, no publish, no `E4` — that is `OrphanReprocessor` (ADR 0003). | `HELD` state of the orphan movement |
 | `CaseStore` | port in `domain/casistica`, impl in `outbound/persistence` | Creates `case_record`; guarded transitions `WHERE case_state = :expected` (ADR, no library). | `case_record`, case-record state machine |
 | `ReportAssembler` | service in `domain/report` | Selects `PENDING_REPORT`, moves them to `IN_REPORT`, builds the XML (header with counts, `rawPayload` as text with full XML escaping, `maxBytes`), creates the `report_file` record. | report shape, `report_file.id` (UUID) |
 | `ReportFileStore` | port in `domain/report` | Persistence of `report_file` metadata (JDBC) + file content (filesystem) + purge by age (7 days). | `report_file`, spool on the volume |

@@ -113,6 +113,7 @@ flowchart LR
     O -.->|picked up| SCH
     SCH -->|re-check registry| R
     SCH -->|resolved within holdTimeout| P
+    SCH -->|resolved, then audit row + RESOLVED| AU
     SCH -->|hold_deadline expired and not in E6| CS
     M --> P
     P -->|OK| U1 & U2
@@ -134,7 +135,7 @@ flowchart LR
 | Inbound / Kafka consumers | Spring Kafka | 3 `@KafkaListener` (registry, topup, withdrawal) + retry-topic listener. JSON deserialization, structural validation, `MANUAL_IMMEDIATE` ack only after the outcome. | RF-01…04, RF-11 |
 | Mapping & in-process processing | Java 21 | String normalization, enum→enum with explicit default, ISO-8601 → `Timestamp` parsing, amounts in minor units, derived and technical fields (`ingestion_time`, `source`, `processing_id`). **No** external calls. | RF-05…08, RF-38 |
 | Anagraphic registry | Spring Data JDBC | Seen users/accounts + latest `version` per `userId` (1:N relation, additive merge of accounts). Existence check for movements; SQL CAS on out-of-sequence updates. | RF-24, RF-25, RF-31 |
-| Orphan-movement handling | `orphan_movement` table + `@Scheduled` | Holding with `hold_deadline` (default `holdTimeout` 60 s). `OrphanReprocessor` every ~15 s: resolved → publish; expired (and not under back-pressure) → E4 case record. No retry topic. | RF-26…28 |
+| Orphan-movement handling | `orphan_movement` table + `@Scheduled` | `OrphanHoldService` parks the movement with `hold_deadline` (default `holdTimeout` 60 s). `OrphanReprocessor` every ~15 s: resolved → dedup check, publish, `audit` row + `RESOLVED` in one post-publish tx; expired and not under back-pressure → E4 case record + `EXPIRED`; expired under E6 → hold frozen. No retry topic. | RF-26…28 |
 | Retry engine | Spring Kafka `@RetryableTopic` | Retry topics `*.retry.<n>` with increasing delay for E7 (and E3 when active). `BackPressureController` for E6 (listener pause). `maxAttempts`, backoff configurable. | RF-12, RF-14, RF-15 |
 | Outbound / Protobuf producer | Spring Kafka + `KafkaProtobufSerializer` | Protobuf serialization, schema registration/validation, synchronous `send()` to `UserAccount` and `WalletMovement` preserving the business key; `enable.idempotence=true`, `acks=all`. | RF-06, RF-09, RF-10, RF-37 |
 | Case-record store | Spring Data JDBC | State machine `PENDING_REPORT` → `IN_REPORT` → `REPORTED` with guarded updates. One record per non-retriable message (E1/E2/E5) or per retry exhaustion (E7/E3/E4). | RF-13, RF-16, RF-32 |

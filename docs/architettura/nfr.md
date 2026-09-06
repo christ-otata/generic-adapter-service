@@ -48,6 +48,8 @@ on `GET /actuator/prometheus`. **Actuator is not yet in `pom.xml`** (see
 | `gsa_backlog_age_seconds` | Gauge | `topic` | §6.3 backlog age |
 | `gsa_unknown_enum_total` | Counter | `field` | RF-08 enum→default warning |
 | `gsa_orphans_held` | Gauge | — | §6.3 movements in the grace period |
+| `gsa_orphans_resolved_total` | Counter | — | §6.3 orphans resolved after the registry arrived |
+| `gsa_orphans_hold_frozen_total` | Counter | — | §6.3 orphan holds frozen during E6 back-pressure |
 | `gsa_orphans_expired_total` | Counter | — | §6.3 orphans discarded (E4) |
 | `gsa_registry_size` | Gauge | `entity` (`user`/`account`) | §6.3 registry size |
 | `gsa_audit_rows_written_total` | Counter | — | §6.3 audit rows |

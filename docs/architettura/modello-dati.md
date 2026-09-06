@@ -193,16 +193,25 @@ inbound partition.
   metadata for reconstruction and for the E4 case record.
 - `hold_deadline = received_at + holdTimeout` (default 60 s, per environment).
 - `OrphanReprocessor` (`@Scheduled`, ~15 s) selects the `state = 'HELD'` rows and
-  for each one: if `userId` and `accountId` are now in the registry → process,
-  publish, `state = 'RESOLVED'`; if `now() > hold_deadline` **and** E6
-  back-pressure is **not** active → `case_record` (E4), `state = 'EXPIRED'`; if
-  expired but under back-pressure → left `HELD` (hold **frozen**), retried on the
-  next pass (ADR [0003](adr/0003-grace-period-orfani-scheduler.md)).
+  for each one:
+  - `userId` and `accountId` now in the registry → run the pre-publish `audit`
+    dedup check (the same one as Flow b); unless the live movement path already
+    recorded this `transaction_id` today, reconstruct and publish the
+    `WalletMovement`; **after** the confirmed publish, one local DB transaction
+    writes the `audit` row (`message_type = 'WALLET_MOVEMENT'`, `transaction_id`,
+    source coordinates, a fresh `processing_id`, RF-29) **and** sets
+    `state = 'RESOLVED'` (ADR [0008](adr/0008-ack-manuale-confine-commit.md)). If
+    the live path already recorded it: no republish, no `audit` write, just
+    `state = 'RESOLVED'`.
+  - `now() > hold_deadline` **and** E6 back-pressure **not** active →
+    `case_record` (E4) **and** `state = 'EXPIRED'` in one transaction.
+  - expired but under back-pressure → left `HELD` (hold **frozen**), retried on
+    the next pass (ADR [0003](adr/0003-grace-period-orfani-scheduler.md)).
 
 ```mermaid
 stateDiagram-v2
     [*] --> HELD : orphan movement, INSERT orphan_movement
-    HELD --> RESOLVED : userId and accountId now in the registry, publish OK
+    HELD --> RESOLVED : registry now present, publish then audit row, or skip-republish if already recorded
     HELD --> HELD : not yet known, or expired but E6 active - hold frozen
     HELD --> EXPIRED : hold_deadline passed and no back-pressure, case_record E4
     RESOLVED --> [*]
@@ -303,7 +312,9 @@ stateDiagram-v2
 - A registry event that lists `A1` and then one that lists only `A2`: after the
   second, `anag_account` contains both `A1` and `A2` (additive merge).
 - An orphan movement resolved within `holdTimeout`: `orphan_movement.state =
-  'RESOLVED'`, no `case_record`, one `WalletMovement` message published.
+  'RESOLVED'`, one `audit` row (`message_type = 'WALLET_MOVEMENT'`, written in the
+  post-publish transaction), no `case_record`, one `WalletMovement` message
+  published.
 - An orphan movement not resolved within `holdTimeout` with the destination
   reachable: `orphan_movement.state = 'EXPIRED'`, one `case_record` with
   `error_category = 'E4'`.
