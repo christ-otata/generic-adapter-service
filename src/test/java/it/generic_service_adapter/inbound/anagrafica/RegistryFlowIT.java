@@ -164,8 +164,9 @@ class RegistryFlowIT {
     assertThat(auditRow("U1").get("dest_topic")).isEqualTo(DEST_TOPIC);
     assertThat(auditRow("U1").get("source_topic")).isEqualTo(SOURCE_TOPIC);
     // The offset is committed only after the destination record + audit row exist (the two
-    // assertions above already held before this one runs, and the listener acks strictly after
-    // AuditStore.record returns — ADR 0008).
+    // assertions above already held before this one runs): publish first, then the single
+    // post-publish DB transaction (CAS + accounts merge + audit) commits, and only then does the
+    // listener ack — ADR 0008, flussi.md a).
     await()
         .atMost(Duration.ofSeconds(10))
         .untilAsserted(() -> assertThat(committedSourceOffset()).isEqualTo(1L));
