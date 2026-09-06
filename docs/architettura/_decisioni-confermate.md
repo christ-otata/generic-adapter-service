@@ -32,7 +32,7 @@
 ## Batch 5 — Case records, outbox, retention, ack
 - **AD-data-case-statemachine** → *`case_state` column + guarded updates* (`WHERE case_state = :expected`), no library. Table `case_record` + FK `report_file_id`.
 - **AD-data-outbox** → *no outbox*. "Process then commit": publish → DB (audit+state) → ack. Crash duplicates absorbed by RNF-04.
-- **AD-data-retention** → *time partition + drop* for `audit` and `case_record`; registry never expires. Retention **30 days** (AD-retention-audit-window, Batch 12). MySQL 8.0: `PARTITION BY RANGE (TO_DAYS(published_at|created_at))` + `DROP PARTITION`; `orphan_movement` / `report_file` with batch `DELETE` (Batch 14).
+- **AD-data-retention** → *time partition + drop* for `audit` and `case_record`; registry never expires. Retention **30 days** (AD-retention-audit-window, Batch 12). MySQL 8.0: `audit` `PARTITION BY RANGE COLUMNS (published_date)` (generated `DATE(published_at)` column), `case_record` `PARTITION BY RANGE (TO_DAYS(created_at))`, both + `DROP PARTITION`; `orphan_movement` / `report_file` with batch `DELETE` (Batch 14).
 - **AD-commit-ackmode** → *`MANUAL_IMMEDIATE`*, ack after publish/case-record/routing.
 
 ## Batch 6 — Transaction boundary and idempotence
@@ -42,7 +42,7 @@
 - **AD-idem-dedup-keys** → *audit as the natural key for movements* (unique index on `transaction_id` → skip republish) + *registry always republished* (RF-31, downstream dedup). **Confirms ASS-3.**
 
 ## Batch 7 — Idempotence (finish) and Protobuf contracts
-- **AD-idem-audit-unique** → *non-unique* index `(source_topic, source_partition, source_offset)` for RNF-11 + movement dedup. MySQL 8.0 (Batch 14, no partial unique index): generated column `txn_dedup` + `UNIQUE (txn_dedup, published_at)`; composite PK `(id, published_at)` for `audit`, `(id, created_at)` for `case_record`.
+- **AD-idem-audit-unique** → *non-unique* index `(source_topic, source_partition, source_offset)` for RNF-11 + movement dedup. MySQL 8.0 (Batch 14, no partial unique index): generated column `txn_dedup` + generated column `published_date` (`DATE(published_at)`) + `UNIQUE (txn_dedup, published_date)`; composite PK `(id, published_date)` for `audit`, `(id, created_at)` for `case_record`; `published_at` stays a full-precision non-key column.
 - **AD-idem-downstream-assumptions** → *explicit contract* in `contratti.md`: downstream idempotent on `transaction_id` (WalletMovement) and `user_id`+`version` (UserAccount); tolerate reordering from the retry topics.
 - **AD-proto-lib** → *`protobuf-java` + Maven `protoc` plugin + `kafka-protobuf-serializer` + `kafka-schema-registry-client`* (new dependencies, Confluent repo).
 - **AD-proto-shape** → *well-defined types*: `Money { int64 minor_units; string currency }`, `google.protobuf.Timestamp`, enums with `*_UNSPECIFIED = 0`, `repeated Account accounts`, `value_date` as `google.type.Date`.
@@ -117,13 +117,16 @@ Flyway stay.
   is **per-connection** → per-tick pattern, not a lifetime lock.
 - **Movement dedup** (no *partial* unique index in MySQL): generated column
   `txn_dedup VARCHAR(64) GENERATED ALWAYS AS (IF(message_type='WALLET_MOVEMENT', transaction_id, NULL)) STORED`
-  + `UNIQUE (txn_dedup, published_at)`. Alternative mentioned: a non-partitioned
+  + generated column `published_date DATE GENERATED ALWAYS AS (DATE(published_at)) STORED`
+  + `UNIQUE (txn_dedup, published_date)`. Alternative mentioned: a non-partitioned
   table `movement_dedup(transaction_id PK)` in the same local tx as the audit.
   **The generated column is recommended.**
-- **Retention partitioning** of `audit` and `case_record`: `PARTITION BY RANGE (TO_DAYS(<date_col>))`
-  + `ALTER TABLE ... DROP PARTITION`. MySQL constraint: every PK/UNIQUE includes the
-  partition column → composite PK `(id, published_at)` for `audit`,
-  `(id, created_at)` for `case_record`, and `UNIQUE (txn_dedup, published_at)`.
+- **Retention partitioning**: `audit` `PARTITION BY RANGE COLUMNS (published_date)`
+  (generated `DATE(published_at)` column), `case_record` `PARTITION BY RANGE (TO_DAYS(created_at))`,
+  both + `ALTER TABLE ... DROP PARTITION`. MySQL constraint: every PK/UNIQUE includes the
+  partition column → composite PK `(id, published_date)` for `audit`,
+  `(id, created_at)` for `case_record`, and `UNIQUE (txn_dedup, published_date)`.
+  `published_at` stays a full-precision non-key column.
   `orphan_movement` / `report_file`: batch `DELETE` (low volume).
 - **No FK on partitioned tables**: `case_record.report_file_id` becomes a
   **logical reference** (no FK). `anag_account.user_id → anag_user.user_id`
@@ -142,8 +145,9 @@ Flyway stay.
 - ADRs updated in place with a footer note "Updated 2026-09-04: MySQL 8.0
   retarget": **0003, 0005, 0007, 0009, 0010, 0011, 0016** (+ tombstone
   `0003-postgresql-store-unico`).
-- **Real redesigns** (not mere renames): (a) dedup via generated column +
-  `UNIQUE (txn_dedup, published_at)` → day-granularity dedup, cross-day absorbed
+- **Real redesigns** (not mere renames): (a) dedup via generated column `txn_dedup`
+  + generated column `published_date` (`DATE(published_at)`) +
+  `UNIQUE (txn_dedup, published_date)` → day-granularity dedup, cross-day absorbed
   by downstream idempotence; (b) composite PK for partitioning; (c) no FK on
   `case_record` (partitioned).
 - **`case_record` retention pre-check** (confirmed 2026-09-04): the `case_record`

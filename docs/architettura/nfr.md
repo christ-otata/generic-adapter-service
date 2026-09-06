@@ -12,7 +12,7 @@ confirmed architectural choices. Where an ADR exists, it is linked.
 | Burst | ×3 for ≥ 5 min with no loss and no unbounded lag — RNF-01 | the Kafka lag absorbs the peak; in prod the CPU HPA adds replicas up to the partition count; no unbounded in-memory queue (orphan movements go to the DB table, not RAM) |
 | Latency | < 2 s p95 consume → publish, **non-contractual best effort** — RNF-02 | short synchronous chain: parse → map → `send().get()` → 1 audit `INSERT` → ack; producer `linger.ms` / `batch.size` tuned per environment; `gsa_publish_latency_seconds` (p95) metric exposed |
 | Synchronous publish | `send().get()` before the ack | at 100-300 msg/s the RTT towards the destination is amply covered; makes RF-11 and E6 obvious (ADR [0008](adr/0008-ack-manuale-confine-commit.md)) |
-| DB peak | `audit` ≈ 8.6 M rows/day at steady state | one `INSERT` per message; `audit` partitioned by day (`PARTITION BY RANGE (TO_DAYS(published_at))`), 30-day retention, `DROP PARTITION` of the expired partition (see [`modello-dati.md`](modello-dati.md)) |
+| DB peak | `audit` ≈ 8.6 M rows/day at steady state | one `INSERT` per message; `audit` partitioned by day (`PARTITION BY RANGE COLUMNS (published_date)`, the generated `DATE(published_at)` column; `published_at` stays a full-precision non-key column), 30-day retention, `DROP PARTITION` of the expired partition (see [`modello-dati.md`](modello-dati.md)) |
 
 ## Reliability and controlled degradation
 
@@ -24,7 +24,7 @@ confirmed architectural choices. Where an ADR exists, it is linked.
 | Vault down | the `report_file` stays `PENDING_SEND`, the case records stay `IN_REPORT`, retry on each tick with backoff on `next_attempt_at`; alert on queue length/age; no case record lost | RF-19, RNF-08 |
 | App restart | anagraphic registry and orphan movements restored from MySQL 8.0; consumption from the last committed offset | RNF-13 |
 | Shutdown | `server.shutdown=graceful` + ordered stop of the `KafkaListenerContainer`: in-flight messages complete publish + audit + ack before termination (ADR 0018) | RNF-10 |
-| Upstream replay | idempotence: `transaction_id` (movements, skip-republish via `UNIQUE (txn_dedup, published_at)` in `audit` — day-granularity dedup), `user_id` + `version` (registry, downstream dedup) (ADR [0009](adr/0009-deduplica-idempotenza.md)) | RNF-04 |
+| Upstream replay | idempotence: `transaction_id` (movements, skip-republish via `UNIQUE (txn_dedup, published_date)` in `audit` — day-granularity dedup), `user_id` + `version` (registry, downstream dedup) (ADR [0009](adr/0009-deduplica-idempotenza.md)) | RNF-04 |
 | Delivery | at-least-once: no message discarded without publish, case record, retry topic or `orphan_movement` | RNF-03 |
 
 ## Observability

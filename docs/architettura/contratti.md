@@ -172,7 +172,7 @@ error).
 | Point | Rule | Reference |
 |---|---|---|
 | Destination producer | `enable.idempotence=true`, `acks=all`, `max.in.flight<=5` | ADR [0009](adr/0009-deduplica-idempotenza.md) |
-| Movements — replay dedup | `audit` with **`UNIQUE (txn_dedup, published_at)`** (generated column `txn_dedup`, MySQL 8.0): if the same `transaction_id` is already present **on the same day**, the adapter does **not** republish; a replay several days apart is absorbed by downstream idempotence | ADR 0009 |
+| Movements — replay dedup | `audit` with **`UNIQUE (txn_dedup, published_date)`** (generated columns `txn_dedup` + `published_date` = `DATE(published_at)`, MySQL 8.0; `published_at` stays a full-precision non-key column): if the same `transaction_id` is already present **on the same day**, the adapter does **not** republish; a replay several days apart is absorbed by downstream idempotence | ADR 0009 |
 | Registry — replay dedup | `UserAccount` **always republished**; the local registry ignores a non-greater `version`; the final dedup is downstream | ASS-3, RF-31 |
 | Downstream dedup keys | `transaction_id` (WalletMovement); `user_id` + `version` (UserAccount) | RNF-04 |
 | Guaranteed ordering | per partition: `userId` (UserAccount), `accountId` (WalletMovement) | RF-10, RF-30 |

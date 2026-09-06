@@ -79,31 +79,70 @@ unaffected.
 sequenceDiagram
     autonumber
     participant K as Kafka source<br/>wallet-account-topup / -withdrawal
-    participant LM as inbound/movimenti
+    participant LM as inbound/movimenti<br/>(orchestrator)
     participant CM as inbound/common
     participant REG as AnagraphicRegistry
+    participant AUD as AuditStore
     participant MM as mapping/movimenti
     participant MVP as MovementPublisher
     participant KD as Kafka dest.<br/>WalletMovement
-    participant AUD as AuditStore
 
     K->>LM: movement (JSON, key=accountId)
-    LM->>CM: bytes + metadata
-    CM->>CM: parse JSON + validation (non-negative integer amount, minor units — RF-38, E2)
-    CM->>REG: exists(userId) AND exists(accountId) ? (RF-25)
-    alt registry OK
-        REG-->>MM: yes
-        MM->>MM: map to WalletMovement, direction = CREDIT (topup) / DEBIT (withdrawal)
-        MM->>MVP: WalletMovement (internal model)
-        MVP->>KD: send(key=accountId).get()  [synchronous, idempotent, acks=all]
-        KD-->>MVP: RecordMetadata
-        MVP->>AUD: local DB tx: INSERT audit (..., transaction_id)  [skip if already present]
-        AUD-->>LM: ok
-        LM->>K: ack MANUAL_IMMEDIATE
-    else registry does NOT contain userId/accountId
-        REG-->>LM: no → Flow c) (E4)
+    LM->>CM: bytes + metadata (topic/partition/offset)
+    CM->>CM: parse JSON + structural validation (non-negative integer amount, minor units — RF-38, E2)
+    CM-->>LM: validated payload + ProcessingContext
+    LM->>REG: exists(userId) AND exists(accountId) ? (RF-25, read)
+    alt registry does NOT contain userId/accountId
+        REG-->>LM: no → Flow c) (orphan hold, E4)
+    else registry OK
+        REG-->>LM: yes
+        LM->>AUD: is there already a WALLET_MOVEMENT audit row for this transaction_id on today's published_date ? (pre-publish dedup check)
+        alt already present (same-day upstream replay)
+            AUD-->>LM: yes
+            LM->>LM: skip — no map, no publish, no audit write, incr the gsa_movements_skipped_total metric (reason same-day replay)
+            LM->>K: ack MANUAL_IMMEDIATE
+        else absent
+            AUD-->>LM: no
+            LM->>MM: build internal model from validated payload
+            MM->>MM: map to WalletMovement, direction = CREDIT (topup) / DEBIT (withdrawal)
+            MM-->>LM: WalletMovement (internal model)
+            LM->>MVP: publish WalletMovement via port
+            MVP->>KD: send(key=accountId).get()  [synchronous, idempotent, acks=all]
+            KD-->>MVP: RecordMetadata
+            MVP-->>LM: publish confirmed
+            Note over LM,AUD: the orchestrator opens one local DB transaction only now (ADR 0008) and wraps only the DB write
+            LM->>AUD: INSERT audit (topic/partition/offset, transaction_id) (RF-29)
+            AUD-->>LM: ok — a concurrent duplicate INSERT hits UNIQUE (txn_dedup, published_date) and is treated as already recorded, no error
+            LM->>K: ack MANUAL_IMMEDIATE
+        end
     end
 ```
+
+**Caption.** The `inbound/movimenti` orchestrator owns the sequence;
+`mapping/movimenti` only builds the `WalletMovement` internal model and drives no
+orchestration. After structural validation the orchestrator runs the
+`AnagraphicRegistry` existence check (RF-25) — a read, so it legitimately stays
+before mapping and publish; if `userId` / `accountId` are absent the movement
+goes to Flow c) (orphan hold, E4), not expanded here. When the registry contains
+both, the orchestrator performs a **pre-publish dedup check** against
+`AuditStore`: is there already a `WALLET_MOVEMENT` `audit` row for this
+`transaction_id` on today's `published_date` (the generated `DATE(published_at)`
+column, which is also the daily partition key)? If yes, this is a same-day
+upstream replay: the orchestrator does **not** map, does **not** publish and does
+**not** write a second `audit` row (ADR 0009); it increments a `gsa_*` skip
+metric and acks `MANUAL_IMMEDIATE`. A post-publish check could not deliver this —
+the publish would already have happened. Only when the row is absent does the
+orchestrator map, then publish synchronously through the `MovementPublisher` port
+(`send(key=accountId).get()`, idempotent producer, `acks=all`); only **after**
+the publish is confirmed does it open a single local DB transaction wrapping only
+the `audit` INSERT (RF-29, ADR 0008), then ack `MANUAL_IMMEDIATE` last. The
+`UNIQUE (txn_dedup, published_date)` constraint is the **race backstop**: if two
+threads pass the pre-publish check concurrently, the second `audit` INSERT hits
+the constraint; that is treated as "already recorded" — no error surfaced, no
+duplicate row — and downstream idempotence on `transaction_id` absorbs the extra
+publish. `published_at` remains on `audit` as a full-precision non-key column for
+traceability / ordering. Dedup is at calendar-day granularity: a replay several
+days apart may republish and is absorbed downstream (ADR 0009).
 
 **Verifiable criteria.**
 
@@ -112,9 +151,10 @@ sequenceDiagram
   currency="EUR"}`, `direction=CREDIT`, key `A1`; one `audit` row with
   `transaction_id=T1`.
 - Replay of the same topup `T1` on the same day → no second `audit` row, no
-  second publish (`UNIQUE (txn_dedup, published_at)` on the generated column;
-  dedup is at partition/day granularity — a replay several days apart may
-  republish and is absorbed by the downstream, ADR 0009).
+  second publish (pre-publish dedup check against `audit`, with
+  `UNIQUE (txn_dedup, published_date)` on the generated column as the race
+  backstop; dedup is at partition/day granularity — a replay several days apart
+  may republish and is absorbed by the downstream, ADR 0009).
 
 ## c) Orphan movement — holding, scheduler, resolution or E4
 

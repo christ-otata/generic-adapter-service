@@ -19,25 +19,31 @@ and the final deduplication delegated to the downstream.
   ordering.
 - **Movements** — skip-republish (MySQL 8.0, no partial unique index): `audit`
   has a **generated column** `txn_dedup VARCHAR(64) GENERATED ALWAYS AS
-  (IF(message_type = 'WALLET_MOVEMENT', transaction_id, NULL)) STORED` and the
-  **`UNIQUE (txn_dedup, published_at)`** constraint. Multiple `NULL`s are
-  allowed, so the registry (null `txn_dedup`) does not enter the constraint. If
-  the `transaction_id` is already present **in the same daily partition**, the
-  adapter does **not** republish and does **not** write a second audit row.
-- **Dedup granularity**: `published_at` is part of the constraint because `audit`
-  is partitioned by day (MySQL constraint: every `UNIQUE` includes the partition
-  column, see [`modello-dati.md`](../modello-dati.md)). So the dedup is at
-  **day granularity**: a replay on the same day is blocked; a replay several days
-  apart may republish, but the downstream stays idempotent on `transaction_id`
-  (skip-republish is a traffic optimization, not a correctness guarantee) and
-  after 30 days the original row has expired anyway.
+  (IF(message_type = 'WALLET_MOVEMENT', transaction_id, NULL)) STORED`, a second
+  **generated column** `published_date DATE GENERATED ALWAYS AS
+  (DATE(published_at)) STORED` and the **`UNIQUE (txn_dedup, published_date)`**
+  constraint. Multiple `NULL`s are allowed, so the registry (null `txn_dedup`)
+  does not enter the constraint. If the `transaction_id` is already present
+  **in the same daily partition**, the adapter does **not** republish and does
+  **not** write a second audit row.
+- **Dedup granularity**: `published_date` (the generated `DATE(published_at)`
+  column) is part of the constraint because `audit` is partitioned by day on
+  that same column (MySQL constraint: every `UNIQUE` includes the partition
+  column, see [`modello-dati.md`](../modello-dati.md)). `published_at` itself
+  stays as a full-precision, non-key column for traceability/ordering. So the
+  dedup is at **day granularity**: a replay on the same day is blocked; a replay
+  several days apart may republish, but the downstream stays idempotent on
+  `transaction_id` (skip-republish is a traffic optimization, not a correctness
+  guarantee) and after 30 days the original row has expired anyway.
 - **Registry** — no skip: `UserAccount` is republished for every event; the local
   registry ignores events with a non-greater `version` (SQL CAS, RF-31); no
   uniqueness constraint on `(user_id, user_version)` in `audit`. The final
   deduplication is the downstream's. **ASS-3 confirmed.**
-- **Composite PK for partitioning**: `audit` PK `(id, published_at)`,
-  `case_record` PK `(id, created_at)` (MySQL constraint). `case_record` is
-  partitioned → `report_file_id` is a logical reference, not an FK.
+- **Composite PK for partitioning**: `audit` PK `(id, published_date)`,
+  `case_record` PK `(id, created_at)` (MySQL constraint). `audit` is partitioned
+  with `PARTITION BY RANGE COLUMNS (published_date)`; `case_record` with
+  `PARTITION BY RANGE (TO_DAYS(created_at))`. `case_record` is partitioned →
+  `report_file_id` is a logical reference, not an FK.
 - **Traceability**: `audit` also has a **non-unique** index on
   `(source_topic, source_partition, source_offset)` (RNF-11).
 - **Downstream contract** (in [`contratti.md`](../contratti.md)): the consumers
@@ -66,9 +72,9 @@ and the final deduplication delegated to the downstream.
 - **+** Movement replays do not generate republishes; registry replays do, as
   required.
 - **+** No new state table for the dedup.
-- **−** `audit` carries a non-unique index + a `UNIQUE (txn_dedup, published_at)`
-  + a `STORED` generated column on a high-write-rate table: cost in write and in
-  space.
+- **−** `audit` carries a non-unique index + a `UNIQUE (txn_dedup, published_date)`
+  + two `STORED` generated columns (`txn_dedup` and `published_date` =
+  `DATE(published_at)`) on a high-write-rate table: cost in write and in space.
 - **−** The movement dedup is at **day granularity** (because of the MySQL
   constraint on partitioned tables): a replay several days apart may republish.
   Acceptable because the downstream is idempotent on `transaction_id`; if strict
@@ -81,7 +87,10 @@ and the final deduplication delegated to the downstream.
 
 > Updated 2026-09-04: DB retarget PostgreSQL → **MySQL 8.0**. The **partial**
 > unique index on `transaction_id` (not supported by MySQL) is replaced by the
-> generated column `txn_dedup` + `UNIQUE (txn_dedup, published_at)`; composite PK
-> `(id, published_at)` / `(id, created_at)` for partitioning; no FK on
+> generated column `txn_dedup` + a second generated column `published_date`
+> (`DATE(published_at)`) + `UNIQUE (txn_dedup, published_date)`; `audit`
+> partitioned by `PARTITION BY RANGE COLUMNS (published_date)`; composite PK
+> `(id, published_date)` for `audit` and `(id, created_at)` for `case_record`;
+> `published_at` kept as a full-precision non-key column; no FK on
 > `case_record` (partitioned table). See `modello-dati.md` → "MySQL 8.0
 > redesigns".
