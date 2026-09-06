@@ -50,12 +50,12 @@ management:
       # auth would switch this to `when-authorized`.
       show-details: always
       show-components: always
-      # Re-enabled in WP8 once every id referenced by the two groups below has a
-      # real contributor — `db` (Boot DataSource), `flyway` + `kafka` (WP8 custom,
+      # Re-enabled in WP8: every id referenced by the two groups below has a real
+      # contributor — `db` (Boot DataSource), `flyway` + `kafka` (WP8 custom,
       # config/observability/health), `destinationKafka` / `schemaRegistry` /
       # `vault` (WP8 custom, same package). Boot validates group membership
-      # eagerly at startup.
-      validate-group-membership: false
+      # eagerly at startup, so the context fails fast on a typo here.
+      validate-group-membership: true
       group:
         # ADR 0018: readiness = DB reachable AND source Kafka reachable AND
         # Flyway migrations applied. `db` is Boot's DataSource indicator;
