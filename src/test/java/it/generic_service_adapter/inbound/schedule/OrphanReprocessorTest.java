@@ -24,6 +24,7 @@ import it.generic_service_adapter.domain.publish.AuditRecord;
 import it.generic_service_adapter.domain.publish.AuditStore;
 import it.generic_service_adapter.domain.publish.MovementPublisher;
 import it.generic_service_adapter.domain.publish.PublishResult;
+import it.generic_service_adapter.inbound.common.DownstreamErrorClassifier;
 import it.generic_service_adapter.inbound.common.MovementEventParser;
 import it.generic_service_adapter.mapping.movimenti.MovementMapper;
 import java.time.Clock;
@@ -61,7 +62,7 @@ class OrphanReprocessorTest {
   private final FakeAuditStore auditStore = new FakeAuditStore();
   private final FakeCaseStore caseStore = new FakeCaseStore();
   private final FakePublisher publisher = new FakePublisher();
-  private final BackPressureController backPressure = new BackPressureController();
+  private final BackPressureController backPressure = BackPressureControllerTestAccess.readOnly();
   private final MeterRegistry meters = new SimpleMeterRegistry();
   private final MutableClock clock = new MutableClock(T0);
 
@@ -84,6 +85,7 @@ class OrphanReprocessorTest {
             mapper,
             publisher,
             backPressure,
+            new DownstreamErrorClassifier(),
             commit,
             new OrphanHoldProperties(HOLD_TIMEOUT, Duration.ofMinutes(15), 200),
             meters,

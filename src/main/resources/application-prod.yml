@@ -33,6 +33,12 @@ gsa:
       linger-millis: 10
       batch-size: 32768
 
+  retry:
+    # = retry-topic partition count (6 prod, topologia-kafka.md)
+    concurrency: 6
+    # prod: devops provisions the 3 x N retry topics; the adapter must not rely on broker auto-create.
+    auto-create: false
+
   schema-registry:
     url: ${GSA_SCHEMA_REGISTRY_URL}
     basic-auth-user-info: ${GSA_SCHEMA_REGISTRY_CREDENTIALS}

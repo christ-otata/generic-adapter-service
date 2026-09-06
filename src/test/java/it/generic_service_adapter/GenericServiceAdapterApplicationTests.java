@@ -3,6 +3,7 @@ package it.generic_service_adapter;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import it.generic_service_adapter.config.properties.AlertThresholdProperties;
+import it.generic_service_adapter.config.properties.BackPressureProperties;
 import it.generic_service_adapter.config.properties.DataSourceProperties;
 import it.generic_service_adapter.config.properties.KafkaDestinationProperties;
 import it.generic_service_adapter.config.properties.KafkaSourceProperties;
@@ -51,6 +52,7 @@ class GenericServiceAdapterApplicationTests {
     OrphanHoldProperties.class,
     ReportProperties.class,
     RetryProperties.class,
+    BackPressureProperties.class,
     AlertThresholdProperties.class
   })
   static class PropertiesOnlyConfiguration {}
@@ -64,6 +66,7 @@ class GenericServiceAdapterApplicationTests {
   @Autowired private OrphanHoldProperties orphanHoldProperties;
   @Autowired private ReportProperties reportProperties;
   @Autowired private RetryProperties retryProperties;
+  @Autowired private BackPressureProperties backPressureProperties;
   @Autowired private AlertThresholdProperties alertThresholdProperties;
 
   @Test
@@ -80,6 +83,9 @@ class GenericServiceAdapterApplicationTests {
     assertThat(orphanHoldProperties.holdTimeout()).isNotNull();
     assertThat(reportProperties.xmlSpoolDirectory()).isNotBlank();
     assertThat(retryProperties.levels()).isPositive();
+    assertThat(retryProperties.topicPattern()).isNotBlank();
+    assertThat(retryProperties.retention()).isNotNull();
+    assertThat(backPressureProperties.probe().adminTimeout()).isNotNull();
     assertThat(alertThresholdProperties.consumerLagThreshold()).isPositive();
   }
 }

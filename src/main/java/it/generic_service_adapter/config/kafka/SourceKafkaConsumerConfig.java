@@ -9,11 +9,13 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.config.SaslConfigs;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.ContainerProperties.AckMode;
 import org.springframework.util.StringUtils;
 
@@ -55,13 +57,19 @@ public class SourceKafkaConsumerConfig {
 
   @Bean(SOURCE_LISTENER_CONTAINER_FACTORY)
   public ConcurrentKafkaListenerContainerFactory<String, byte[]>
-      sourceKafkaListenerContainerFactory(ConsumerFactory<String, byte[]> sourceConsumerFactory) {
+      sourceKafkaListenerContainerFactory(
+          ConsumerFactory<String, byte[]> sourceConsumerFactory,
+          @Qualifier(ListenerErrorHandlingConfig.NEVER_RECOVER_ERROR_HANDLER)
+              CommonErrorHandler neverRecoverErrorHandler) {
     ConcurrentKafkaListenerContainerFactory<String, byte[]> factory =
         new ConcurrentKafkaListenerContainerFactory<>();
     factory.setConsumerFactory(sourceConsumerFactory);
     // = partition count per topic (3 dev / 6 prod), from properties, never hardcoded.
     factory.setConcurrency(kafkaSourceProperties.concurrency());
     factory.getContainerProperties().setAckMode(AckMode.MANUAL_IMMEDIATE);
+    // ADR 0008: an exception that escapes a processor must never advance the offset — retry
+    // forever, never "recover" and skip (WP6, ListenerErrorHandlingConfig).
+    factory.setCommonErrorHandler(neverRecoverErrorHandler);
     return factory;
   }
 
@@ -79,6 +87,10 @@ public class SourceKafkaConsumerConfig {
     configs.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
     configs.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, kafkaSourceProperties.autoOffsetReset());
     configs.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, kafkaSourceProperties.maxPollRecords());
+    // The inbound/retry listener subscribes to *.retry.<n> by pattern (WP6): keep metadata fresh
+    // enough that a newly-provisioned retry topic is picked up within seconds rather than the
+    // 5-minute client default. Harmless for the fixed main topics.
+    configs.put(ConsumerConfig.METADATA_MAX_AGE_CONFIG, 10_000);
 
     configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
     configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);

@@ -35,6 +35,13 @@ gsa:
       linger-millis: 5
       batch-size: 16384
 
+  retry:
+    # = retry-topic partition count (3 dev, topologia-kafka.md)
+    concurrency: 3
+    # dev/test: rely on the broker's auto.create.topics.enable when the router first produces to
+    # *.retry.0 (the adapter itself never issues an AdminClient create).
+    auto-create: true
+
   schema-registry:
     url: http://localhost:8081
     basic-auth-user-info:

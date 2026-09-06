@@ -3,6 +3,9 @@ package it.generic_service_adapter.inbound.movimenti;
 import io.micrometer.core.instrument.MeterRegistry;
 import it.generic_service_adapter.config.properties.KafkaSourceProperties;
 import it.generic_service_adapter.domain.anagrafica.AnagraphicRegistry;
+import it.generic_service_adapter.domain.backpressure.BackPressureController;
+import it.generic_service_adapter.domain.backpressure.DownstreamKind;
+import it.generic_service_adapter.domain.model.ErrorCategory;
 import it.generic_service_adapter.domain.model.MovementDirection;
 import it.generic_service_adapter.domain.model.ProcessingContext;
 import it.generic_service_adapter.domain.model.WalletMovementRecord;
@@ -11,18 +14,22 @@ import it.generic_service_adapter.domain.orfani.OrphanHoldService;
 import it.generic_service_adapter.domain.orfani.OrphanMovementRecord;
 import it.generic_service_adapter.domain.publish.AuditOutcome;
 import it.generic_service_adapter.domain.publish.AuditStore;
+import it.generic_service_adapter.domain.publish.DestinationPublishException;
 import it.generic_service_adapter.domain.publish.MovementPublisher;
 import it.generic_service_adapter.domain.publish.PublishResult;
 import it.generic_service_adapter.inbound.common.BusinessKeys;
+import it.generic_service_adapter.inbound.common.DownstreamErrorClassifier;
 import it.generic_service_adapter.inbound.common.InboundCaseRecorder;
 import it.generic_service_adapter.inbound.common.MovementEventParser;
 import it.generic_service_adapter.inbound.common.MovementParseResult;
 import it.generic_service_adapter.inbound.common.ProcessingContextFactory;
+import it.generic_service_adapter.inbound.retry.RetryRouter;
 import it.generic_service_adapter.mapping.movimenti.MovementMapper;
 import java.nio.charset.StandardCharsets;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.stereotype.Component;
 
 /**
@@ -49,9 +56,15 @@ import org.springframework.stereotype.Component;
  * </ol>
  *
  * The {@code direction} is derived from <b>which topic</b> the record came from ({@link
- * ConsumerRecord#topic()}), never the payload (contratti.md §2, RF-30). A publish failure or a
- * post-publish transaction failure propagates from here (no ack, redelivery); E5/E6/E7
- * discrimination and back-pressure are WP6.
+ * ConsumerRecord#topic()}), never the payload (contratti.md §2, RF-30).
+ *
+ * <p><b>WP6 — publish-failure discrimination.</b> A {@code DestinationPublishException} out of the
+ * {@code send().get()} is classified by {@code DownstreamErrorClassifier}: <b>E6</b> → {@code
+ * BackPressureController.onDownstreamUnreachable} then re-thrown (no ack); <b>E5</b> → {@code
+ * case_record} + alert, then return so the listener acks; <b>E7</b> (or E3) → routed to {@code
+ * *.retry.0}, then return so the listener acks (RF-12). A connection-level {@code
+ * DataAccessResourceFailureException} out of the audit transaction is the MySQL back-pressure seam
+ * (same entry point, re-thrown); any other commit failure propagates unchanged.
  *
  * <p>Kept in {@code inbound/movimenti} (not {@code domain}) because it drives ports and touches
  * {@code ConsumerRecord}. This method is intentionally <b>not</b> {@code @Transactional} — it
@@ -76,6 +89,9 @@ public class MovementEventProcessor {
   private final MovementCommit movementCommit;
   private final KafkaSourceProperties kafkaSourceProperties;
   private final MeterRegistry meterRegistry;
+  private final DownstreamErrorClassifier downstreamErrorClassifier;
+  private final RetryRouter retryRouter;
+  private final BackPressureController backPressureController;
 
   public void process(ConsumerRecord<String, byte[]> record) {
     ProcessingContext ctx = processingContextFactory.create(record);
@@ -143,10 +159,24 @@ public class MovementEventProcessor {
             valid.event(), direction, valid.eventTime(), valid.valueDate(), ctx);
 
     // ADR 0008 "process then commit": publish FIRST, synchronously, with NO DB transaction open.
-    PublishResult publish = movementPublisher.publish(movement);
+    PublishResult publish;
+    try {
+      publish = movementPublisher.publish(movement);
+    } catch (DestinationPublishException e) {
+      handlePublishFailure(record, ctx, rawJson, keys, e);
+      return; // E5 (case record) / E7 (routed to *.retry.0) → the listener acks. E6 re-threw above.
+    }
 
     // Only now: one local DB transaction (separate bean) wrapping ONLY the audit INSERT.
-    AuditOutcome outcome = movementCommit.recordAudit(movement, publish, ctx);
+    AuditOutcome outcome;
+    try {
+      outcome = movementCommit.recordAudit(movement, publish, ctx);
+    } catch (DataAccessResourceFailureException dbUnreachable) {
+      // MySQL back-pressure seam (ADR 0007 also covers MySQL): connection-level failures only —
+      // a business/constraint failure still propagates unchanged (rollback + redelivery).
+      backPressureController.onDownstreamUnreachable(DownstreamKind.MYSQL, dbUnreachable);
+      throw dbUnreachable;
+    }
 
     log.info(
         "WalletMovement forwarded: transactionId={} accountId={} direction={} auditOutcome={}"
@@ -160,6 +190,28 @@ public class MovementEventProcessor {
         publish.offset(),
         ctx.sourceOffset(),
         ctx.processingId());
+  }
+
+  /**
+   * E5 → case record + alert; E6 → back-pressure (re-thrown); E7/E3 → route to {@code *.retry.0}.
+   */
+  private void handlePublishFailure(
+      ConsumerRecord<String, byte[]> record,
+      ProcessingContext ctx,
+      String rawJson,
+      BusinessKeys keys,
+      DestinationPublishException failure) {
+    ErrorCategory category = downstreamErrorClassifier.classify(failure);
+    switch (category) {
+      case E6 -> {
+        backPressureController.onDownstreamUnreachable(DownstreamKind.DESTINATION_KAFKA, failure);
+        throw failure; // no ack — redelivered on resume (ADR 0007, RF-14)
+      }
+      case E5 ->
+          inboundCaseRecorder.recordSerializationFailure(
+              ctx, rawJson, DownstreamErrorClassifier.describe(failure), keys);
+      default -> retryRouter.routeFromMainPath(record, ctx, ErrorCategory.E7, failure);
+    }
   }
 
   private MovementDirection directionFor(String topic) {

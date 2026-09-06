@@ -109,12 +109,29 @@ gsa:
     xml-file-retention: 7d
     max-raw-payload-bytes: 65536
 
+  # Manual retry routing for E7 / E3 (ADR 0002 rewrite — no @RetryableTopic). levels == max-attempts
+  # in every profile: *.retry.0 .. *.retry.<levels-1>, exhaustion case_record after the last.
+  # backoff*, retention and topic-pattern are environment-agnostic; concurrency and auto-create
+  # differ per environment (application-dev.yml / application-prod.yml), like source.concurrency.
   retry:
     levels: 4
     max-attempts: 4
     backoff-initial: 1s
     backoff-max: 30s
     backoff-multiplier: 2.0
+    # doc/devops only — the app never creates production topics. Must exceed holdTimeout and the
+    # worst-case E7 retry span (max-attempts * backoff-max).
+    retention: 1h
+    # anchored to the three known source topics so no unrelated *.retry.* is ever consumed.
+    topic-pattern: "(user-account-data|wallet-account-topup|wallet-account-withdrawal)\\.retry\\.\\d+"
+
+  # E6 recovery probe (ADR 0007). Environment-agnostic resilience knob.
+  back-pressure:
+    probe:
+      initial-backoff: 1s
+      max-backoff: 30s
+      multiplier: 2.0
+      admin-timeout: 5s
 
   mapping:
     # Constants written to <message>.source (contratti.md §2). Not hardcoded in

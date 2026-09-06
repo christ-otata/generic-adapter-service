@@ -4,6 +4,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import it.generic_service_adapter.config.properties.OrphanHoldProperties;
 import it.generic_service_adapter.domain.anagrafica.AnagraphicRegistry;
 import it.generic_service_adapter.domain.backpressure.BackPressureController;
+import it.generic_service_adapter.domain.backpressure.DownstreamKind;
 import it.generic_service_adapter.domain.casistica.CaseRecord;
 import it.generic_service_adapter.domain.casistica.CaseState;
 import it.generic_service_adapter.domain.model.ErrorCategory;
@@ -13,8 +14,10 @@ import it.generic_service_adapter.domain.model.WalletMovementRecord;
 import it.generic_service_adapter.domain.orfani.OrphanMovementRecord;
 import it.generic_service_adapter.domain.orfani.OrphanStore;
 import it.generic_service_adapter.domain.publish.AuditStore;
+import it.generic_service_adapter.domain.publish.DestinationPublishException;
 import it.generic_service_adapter.domain.publish.MovementPublisher;
 import it.generic_service_adapter.domain.publish.PublishResult;
+import it.generic_service_adapter.inbound.common.DownstreamErrorClassifier;
 import it.generic_service_adapter.inbound.common.MovementEventParser;
 import it.generic_service_adapter.inbound.common.MovementParseResult;
 import it.generic_service_adapter.mapping.movimenti.MovementMapper;
@@ -26,6 +29,7 @@ import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -80,6 +84,7 @@ public class OrphanReprocessor {
   private final MovementMapper movementMapper;
   private final MovementPublisher movementPublisher;
   private final BackPressureController backPressureController;
+  private final DownstreamErrorClassifier downstreamErrorClassifier;
   private final OrphanReprocessorCommit commit;
   private final OrphanHoldProperties orphanHoldProperties;
   private final MeterRegistry meterRegistry;
@@ -104,6 +109,7 @@ public class OrphanReprocessor {
       try {
         reprocessRow(row);
       } catch (RuntimeException e) {
+        maybeTriggerBackPressure(e);
         // One bad row must not abort the pass (nor kill the scheduler thread). It stays HELD and is
         // retried next pass; its hold_deadline still governs the eventual E4.
         log.error(
@@ -117,6 +123,25 @@ public class OrphanReprocessor {
             row.accountId(),
             e);
       }
+    }
+  }
+
+  /**
+   * Back-pressure seam for the scheduled path (ADR 0007 also covers MySQL / the destination): a
+   * connection-level MySQL failure, or a destination-publish failure whose cause chain classifies
+   * E6, drives the same {@code BackPressureController.onDownstreamUnreachable(...)} entry point as
+   * the live path. E5 / E7 are deliberately left as "row stays HELD, retried next pass" — the
+   * orphan grace period ({@code hold_deadline}) already bounds them, and the reprocessor has no
+   * offset to withhold. Reported as a seam (not a full wire) in the WP6 report.
+   */
+  private void maybeTriggerBackPressure(RuntimeException failure) {
+    if (failure instanceof DataAccessResourceFailureException) {
+      backPressureController.onDownstreamUnreachable(DownstreamKind.MYSQL, failure);
+      return;
+    }
+    if (failure instanceof DestinationPublishException
+        && downstreamErrorClassifier.classify(failure) == ErrorCategory.E6) {
+      backPressureController.onDownstreamUnreachable(DownstreamKind.DESTINATION_KAFKA, failure);
     }
   }
 
