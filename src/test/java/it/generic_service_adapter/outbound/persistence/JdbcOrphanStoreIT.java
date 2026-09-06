@@ -127,6 +127,57 @@ class JdbcOrphanStoreIT {
   }
 
   @Test
+  void touchBumpsAttemptsAndLastCheckedAtButKeepsTheRowHeld() {
+    OrphanMovementRecord movement =
+        newHeldMovement(
+            LocalDateTime.of(2026, 9, 4, 10, 0, 0), LocalDateTime.of(2026, 9, 4, 10, 1, 0));
+    store.insert(movement);
+
+    LocalDateTime firstCheck = LocalDateTime.of(2026, 9, 4, 10, 0, 15);
+    assertThat(store.touch(movement.id(), firstCheck)).isTrue();
+    LocalDateTime secondCheck = LocalDateTime.of(2026, 9, 4, 10, 0, 45);
+    assertThat(store.touch(movement.id(), secondCheck)).isTrue();
+
+    OrphanMovementRecord touched = store.findById(movement.id()).orElseThrow();
+    assertThat(touched.state()).isEqualTo(OrphanState.HELD);
+    assertThat(touched.attempts()).isEqualTo(2);
+    assertThat(touched.lastCheckedAt()).isEqualTo(secondCheck);
+    assertThat(store.selectHeld(10)).extracting(OrphanMovementRecord::id).contains(movement.id());
+  }
+
+  @Test
+  void touchIsANoOpOnceTheRowIsNoLongerHeld() {
+    OrphanMovementRecord movement =
+        newHeldMovement(
+            LocalDateTime.of(2026, 9, 4, 10, 0, 0), LocalDateTime.of(2026, 9, 4, 10, 1, 0));
+    store.insert(movement);
+    assertThat(store.markExpired(movement.id(), LocalDateTime.of(2026, 9, 4, 10, 2, 0))).isTrue();
+
+    assertThat(store.touch(movement.id(), LocalDateTime.of(2026, 9, 4, 10, 3, 0))).isFalse();
+    OrphanMovementRecord unchanged = store.findById(movement.id()).orElseThrow();
+    assertThat(unchanged.state()).isEqualTo(OrphanState.EXPIRED);
+    assertThat(unchanged.attempts()).isEqualTo(1); // only the markExpired bump, not the touch
+  }
+
+  @Test
+  void countHeldCountsOnlyHeldRows() {
+    store.insert(
+        newHeldMovement(
+            LocalDateTime.of(2026, 9, 4, 9, 0, 0), LocalDateTime.of(2026, 9, 4, 9, 1, 0)));
+    OrphanMovementRecord toResolve =
+        newHeldMovement(
+            LocalDateTime.of(2026, 9, 4, 9, 0, 0), LocalDateTime.of(2026, 9, 4, 9, 1, 0));
+    store.insert(toResolve);
+    store.insert(
+        newHeldMovement(
+            LocalDateTime.of(2026, 9, 4, 9, 0, 0), LocalDateTime.of(2026, 9, 4, 9, 1, 0)));
+
+    assertThat(store.countHeld()).isEqualTo(3);
+    store.markResolved(toResolve.id(), LocalDateTime.of(2026, 9, 4, 9, 0, 30));
+    assertThat(store.countHeld()).isEqualTo(2);
+  }
+
+  @Test
   void selectHeldOrdersByHoldDeadlineAscending() {
     OrphanMovementRecord later =
         newHeldMovement(

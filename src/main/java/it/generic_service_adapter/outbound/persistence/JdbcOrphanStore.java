@@ -50,6 +50,19 @@ public class JdbcOrphanStore implements OrphanStore {
       WHERE id = :id AND state = 'HELD'
       """;
 
+  // Touch-without-transition: the reprocessor inspected the row but it stays HELD (grace window not
+  // elapsed, or elapsed-but-frozen under E6). Same guard and same attempts/last_checked_at bump as
+  // TRANSITION, minus the state change.
+  private static final String TOUCH =
+      """
+      UPDATE orphan_movement
+      SET last_checked_at = :checkedAt, attempts = attempts + 1
+      WHERE id = :id AND state = 'HELD'
+      """;
+
+  private static final String COUNT_HELD =
+      "SELECT COUNT(*) FROM orphan_movement WHERE state = 'HELD'";
+
   private final NamedParameterJdbcTemplate jdbcTemplate;
 
   @Override
@@ -85,6 +98,23 @@ public class JdbcOrphanStore implements OrphanStore {
         .query(SELECT_BY_ID, new MapSqlParameterSource("id", id), ROW_MAPPER)
         .stream()
         .findFirst();
+  }
+
+  @Override
+  public boolean touch(String id, LocalDateTime checkedAt) {
+    MapSqlParameterSource params =
+        new MapSqlParameterSource().addValue("id", id).addValue("checkedAt", checkedAt);
+    int affected = jdbcTemplate.update(TOUCH, params);
+    if (affected == 0) {
+      log.debug("Orphan movement id={} was no longer HELD, touch is a no-op", id);
+    }
+    return affected != 0;
+  }
+
+  @Override
+  public long countHeld() {
+    Long count = jdbcTemplate.queryForObject(COUNT_HELD, new MapSqlParameterSource(), Long.class);
+    return count == null ? 0L : count;
   }
 
   @Override

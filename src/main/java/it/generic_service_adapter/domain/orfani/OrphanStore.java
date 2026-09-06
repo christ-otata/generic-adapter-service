@@ -22,6 +22,25 @@ public interface OrphanStore {
    */
   List<OrphanMovementRecord> selectHeld(int limit);
 
+  /**
+   * Records that {@code OrphanReprocessor} inspected this row on a pass that neither resolved nor
+   * expired it: it is still {@code HELD} (registry not there yet and {@code hold_deadline} not
+   * reached, or the deadline is reached but E6 back-pressure has the hold frozen). Bumps {@code
+   * attempts} and sets {@code last_checked_at}; the state is unchanged. Guarded on {@code state =
+   * 'HELD'} like the transitions.
+   *
+   * @return {@code true} if the row was still {@code HELD} and was touched; {@code false} if a
+   *     concurrent pass had already moved it out of {@code HELD} — an expected no-op.
+   */
+  boolean touch(String id, LocalDateTime checkedAt);
+
+  /**
+   * {@code SELECT COUNT(*) FROM orphan_movement WHERE state = 'HELD'} — backs the {@code
+   * gsa_orphans_held} gauge (ADR 0003 §6.3). A live query, so the gauge is accurate independently
+   * of the reprocessor's tick.
+   */
+  long countHeld();
+
   /** Reads back a single row by id, for verification/testing. */
   Optional<OrphanMovementRecord> findById(String id);
 
