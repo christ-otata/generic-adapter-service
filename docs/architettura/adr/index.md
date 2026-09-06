@@ -11,7 +11,7 @@ _supersedes_ the previous one and its status is updated.
 | # | Title | Status | Trace |
 |---|---|---|---|
 | [0001](0001-strati-e-confini-componenti.md) | Component layering and boundaries | Accepted 2026-09-04 | AD-comp-layering, AD-comp-ports, AD-comp-grace-owner, DA-consumer-model |
-| [0002](0002-retry-retryabletopic-e4-deadline.md) | Retry mechanism: `@RetryableTopic` for E3/E7, E4 with a deadline | Accepted 2026-09-04 | AD-retry-mechanism, RF-12, RF-13, DA-retry-ordine |
+| [0002](0002-retry-retryabletopic-e4-deadline.md) | Retry mechanism: manual routing to source-cluster retry topics for E3/E7, E4 with a deadline | Accepted 2026-09-06 (supersedes the 2026-09-04 `@RetryableTopic` decision) | AD-retry-mechanism, RF-12, RF-13, DA-retry-ordine |
 | [0003](0003-grace-period-orfani-scheduler.md) | Orphan-movement grace period: scheduler + `orphan_movement` table | Accepted 2026-09-04 | AD-grace-mechanism, AD-retry-vs-backpressure-interplay, RF-26..28, DA-utente-sconosciuto |
 | [0004](0004-topologia-retry-topic.md) | Retry-topic topology, naming, consumer group per role | Accepted 2026-09-04 | AD-topo-retry-count, AD-topo-naming, AD-topo-partitions, AD-consumer-group-naming, RF-12 |
 | [0005](0005-assenza-dlt.md) | No DLT: the case-record store as the final destination of errors | Accepted 2026-09-04 | AD-topo-dlt, RF-13 |

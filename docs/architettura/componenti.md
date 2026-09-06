@@ -18,7 +18,7 @@ Spring Data JDBC, the Protobuf serializer or the HTTP client.
 ```
 it.generic_service_adapter
 ├── config/                         Spring configuration, no domain logic
-│   ├── kafka/                       multi-cluster factory (source/destination), @RetryableTopic, MANUAL_IMMEDIATE ack
+│   ├── kafka/                       multi-cluster factory (source/destination), source-cluster KafkaTemplate<String,byte[]> for retry routing, MANUAL_IMMEDIATE ack
 │   ├── persistence/                 DataSource, Flyway, Spring Data JDBC
 │   ├── web/                         RestClient towards the Vault
 │   ├── observability/               Actuator, Micrometer, "downstream" health group
@@ -27,7 +27,7 @@ it.generic_service_adapter
 ├── inbound/                        inbound adapters (event-driven or time-driven)
 │   ├── anagrafica/                  @KafkaListener on user-account-data
 │   ├── movimenti/                   @KafkaListener on wallet-account-topup and -withdrawal
-│   ├── retry/                       @RetryableTopic listener of the .retry.<n> topics (E3/E7)
+│   ├── retry/                       backoff listener of the .retry.<n> topics (E3/E7): non-blocking delay, re-attempt, exhaustion case_record
 │   ├── schedule/                    ReportRunner (@Scheduled) + OrphanReprocessor (@Scheduled) + OrphanReprocessorCommit (tx boundary)
 │   └── common/                      JSON deserialization, structural validation, business-key extraction, E1..E7 classification
 │
@@ -116,7 +116,7 @@ flowchart TB
     subgraph INB["inbound"]
       LA["anagrafica<br/>@KafkaListener"]
       LM["movimenti<br/>@KafkaListener (topup + withdrawal)"]
-      LR["retry<br/>@RetryableTopic listener"]
+      LR["retry<br/>inbound/retry backoff listener"]
       SR1["schedule/ReportRunner<br/>@Scheduled + GET_LOCK MySQL per tick"]
       SR2["schedule/OrphanReprocessor (+ OrphanReprocessorCommit)<br/>@Scheduled every ~15s"]
       CMN["common<br/>JSON deser + validation + E1..E7 classification"]
@@ -200,7 +200,7 @@ adapter.
 |---|---|---|---|
 | Anagrafica listener | `inbound/anagrafica` | Consumes `user-account-data`, `MANUAL_IMMEDIATE` ack only after the outcome (RF-11). | `user-account-data` offset |
 | Movimenti listener | `inbound/movimenti` | Consumes `wallet-account-topup` and `-withdrawal`, a single path, `direction` derived from the topic. | offsets of the two movement topics |
-| Retry listener | `inbound/retry` | Consumes the `.retry.<n>` topics (E3/E7), retries mapping+publish, on retry exhaustion requests the case record. | retry-topic offsets |
+| Retry listener | `inbound/retry` | Consumes the `.retry.<n>` topics (E3/E7); applies the non-blocking backoff delay (partition pause/resume, no `Thread.sleep`), re-runs mapping+publish, routes to `.retry.<n+1>` on failure, and on retry exhaustion writes the `case_record` **itself** (E7/E3, `attempts = maxAttempts`, `case_state = PENDING_REPORT`). | retry-topic offsets |
 | `ReportRunner` | `inbound/schedule` | 15-min tick + polling of the `PENDING_REPORT` count every ~30s; **single-instance** via MySQL application lock (`GET_LOCK('gsa_report_runner', 0)` acquired at the start of the tick, `RELEASE_LOCK` at the end of the tick); orchestrates generation + send (ADR 0016). | per-tick lock `gsa_report_runner`; `report_file` lifecycle |
 | `OrphanReprocessor` (+ `OrphanReprocessorCommit` tx boundary) | `inbound/schedule` | Scheduled pass every ~15s: per `HELD` `orphan_movement` row, re-checks `AnagraphicRegistry` and either **resolves** (re-parse → `AuditStore` dedup check → `MovementPublisher` publish → `audit` INSERT + `state=RESOLVED` in one post-publish tx) / **expires to E4** (`CaseStore` `case_record` + `state=EXPIRED` in one tx) / **freezes the hold** while `BackPressureController.isBackPressureActive()`. Drives `OrphanStore`, `AnagraphicRegistry`, `MovementPublisher`, `AuditStore`, `CaseStore` directly. | resolve / expire / freeze of held orphans |
 | `inbound/common` | `inbound/common` | JSON parsing, structural validation, `businessKeys` extraction, `E1..E7` classification, `ProcessingContext` construction (`topic/partition/offset`, `processing_id`). | inbound error taxonomy |
@@ -214,7 +214,7 @@ adapter.
 | `UserAccountPublisher` / `MovementPublisher` | ports in `domain/publish`, impl in `outbound/kafka` | **Synchronous** `send()` to `UserAccount` / `WalletMovement`, `enable.idempotence=true`, `acks=all`; preserves the business key (RF-10). | producer towards the destination cluster |
 | `AuditStore` | port in `domain/publish`, impl in `outbound/persistence` | One `INSERT` into `audit` per published message, **before** the ack (RF-29). Skip republish of already-present movements (`UNIQUE (txn_dedup, published_date)` constraint on the generated columns `txn_dedup` + `published_date` = `DATE(published_at)`). | `audit` |
 | `BackPressureController` | service in `domain/backpressure` | On `E6` pauses **all** listeners (main + retry) via `ListenerControl`, starts `DestinationProbe`, resumes on recovery, emits the `DEST_CLUSTER_DOWN` alert (ADR 0007). | global back-pressure state |
-| `config/*` | `config` | Multi-cluster Kafka factory, `@RetryableTopic` (custom `RetryTopicConfiguration`), DataSource + Flyway, `RestClient`, Actuator + `downstream` health group, `@ConfigurationProperties`. | technology binding, no domain logic |
+| `config/*` | `config` | Multi-cluster Kafka factory, source-cluster `KafkaTemplate<String,byte[]>` for retry routing, `MANUAL_IMMEDIATE` ack, DataSource + Flyway, `RestClient`, Actuator + `downstream` health group, `@ConfigurationProperties`. | technology binding, no domain logic |
 
 ## Section boundaries
 

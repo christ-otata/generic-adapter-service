@@ -91,10 +91,10 @@ flowchart TD
 
     PROC -->|"E6 unreachable destination"| BP["BACK-PRESSURE<br/>pause of all listeners, no commit, DEST_CLUSTER_DOWN alert"]
 
-    PROC -->|"E7 internal error (and E3 when active)"| RT["route to *.retry.0 with backoff header"]
-    RT --> RTN["*.retry.1 ... *.retry.N (increasing delay)"]
+    PROC -->|"E7 internal error (and E3 when active)"| RT["adapter publishes to *.retry.0 (source cluster)<br/>headers carry category / attempt / backoff / process-after"]
+    RT --> RTN["inbound/retry applies a non-blocking delay, then re-attempts<br/>*.retry.1 ... *.retry.N (increasing delay)"]
     RTN -->|"attempt succeeded"| PUB
-    RTN -->|"maxAttempts exceeded"| CASE7["case_record (E7/E3) + alert"]
+    RTN -->|"maxAttempts exceeded"| CASE7["case_record (E7/E3) written by inbound/retry + alert"]
 
     PROC -->|"E4 orphan movement"| ORPH["INSERT orphan_movement, hold_deadline = now + holdTimeout<br/>ack offset, partition free"]
     ORPH --> SCH["scheduler every ~15s: userId/accountId now in the registry?"]
@@ -107,11 +107,11 @@ flowchart TD
 |---|---|---|---|---|
 | **E1** | Malformed / unparsable JSON | No | immediate `case_record`, offset committed | n/a |
 | **E2** | Structural invalidity (mandatory field, non-integer/negative amount, unparsable timestamp) | No | immediate `case_record`, **not** published, consumption continues | n/a |
-| **E3** | External dependency unavailable | Yes | **Provisioned, not active** (no external calls). When active: `*.retry.<n>` with backoff, then `case_record` | not guaranteed for those messages |
+| **E3** | External dependency unavailable | Yes | **Provisioned, not active** (no external calls). When active: the adapter publishes to `*.retry.0` (source cluster) with category/attempt/backoff headers; `inbound/retry` applies a non-blocking delay and re-attempts up to `maxAttempts`; exhaustion → `case_record` | not guaranteed for those messages |
 | **E4** | Orphan movement (user/account not in the registry) | Yes (time-bounded) | `orphan_movement` in MySQL 8.0 + `OrphanReprocessor` every ~15s; resolved → publish, `hold_deadline` passed → `case_record`. **Hold frozen during E6** | not guaranteed for those messages |
 | **E5** | Protobuf serialization failed / incompatible schema | No | `case_record` + high-priority alert (systemic problem) | n/a |
 | **E6** | Destination cluster unreachable / produce failed | Yes | **Back-pressure**: `pause()` of all listeners, no commit, `DestinationProbe`, alert. No mass case records | preserved (partition halted) |
-| **E7** | Unexpected internal error (NPE, bug) | Yes (limited) | `*.retry.<n>` with backoff, then `case_record` + alert | not guaranteed for those messages |
+| **E7** | Unexpected internal error (NPE, bug) | Yes (limited) | The adapter publishes to `*.retry.0` (source cluster) with category/attempt/backoff headers; `inbound/retry` applies a non-blocking delay and re-attempts up to `maxAttempts`; exhaustion → `case_record` + alert | not guaranteed for those messages |
 
 **Why E6 does not use the retry topics.** If the destination is down, every
 message would fail: routing them all would produce a storm of case records and

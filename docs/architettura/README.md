@@ -23,8 +23,10 @@ Kafka clusters.
   `accountId`, `direction` = `CREDIT` / `DEBIT`). The schema is
   registered/validated against a **Confluent Schema Registry**.
 - **Errors and retry.** Taxonomy `E1..E7`. Non-retriable (`E1`, `E2`, `E5`) →
-  immediate case record. Transient (`E3` provisioned, `E7`) → **retry topic**
-  `@RetryableTopic` with backoff, then case record. Orphan movement (`E4`) →
+  immediate case record. Transient (`E3` provisioned, `E7`) → **retry topics**
+  `*.retry.<n>` on the source cluster with backoff, routed by the adapter (manual
+  retry routing, ADR 0002); a non-blocking-delay listener re-attempts, then case
+  record on exhaustion. Orphan movement (`E4`) →
   holding in the MySQL table `orphan_movement` with `hold_deadline` and a
   **scheduler** that re-checks the registry; resolved → published, expired →
   case record. Unreachable destination (`E6`) → **back-pressure** (listeners

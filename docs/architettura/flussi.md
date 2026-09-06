@@ -310,41 +310,50 @@ sequenceDiagram
 - On destination restart: consumption resumes from the last committed offset, no
   message lost, no duplicate beyond those absorbed by idempotence.
 
-## f) Retry E3/E7 via `@RetryableTopic`
+## f) Retry E3/E7 — manual routing to source-cluster retry topics
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant L as inbound/* (main listener)
     participant RT as *.retry.0 ... *.retry.N (source cluster)
-    participant LR as inbound/retry (@RetryableTopic listener)
+    participant LR as inbound/retry (backoff listener, group gsa-retry)
     participant MVP as Publisher
     participant KD as Kafka destination
     participant CST as CaseStore
     participant AL as Alerting
 
-    L->>L: processing → exception classified E7 (or E3 when active)
-    L->>RT: publish to *.retry.0 with header (category, attempt, backoff)
+    L->>L: unexpected error escapes process, classified E7 (or E3 when active)
+    L->>RT: publish untransformed record to *.retry.0 via the source-cluster byte-array template, headers carry category, attempt 0, process-after
     L->>L: ack main offset (partition advances — RF-12)
-    loop attempt = 1..maxAttempts
-        RT->>LR: delivery after increasing delay
-        LR->>MVP: retry mapping + publish
+    loop attempt = 0..maxAttempts-1
+        RT->>LR: delivery from *.retry.(attempt)
+        LR->>LR: non-blocking delay until process-after, partition pause then resume, no Thread.sleep
+        LR->>MVP: re-run mapping + publish, same inbound/common + mapping + publisher as the live path
         alt publish OK
             MVP->>KD: WalletMovement / UserAccount
-            KD-->>LR: ack → done (no case record)
-        else still failing, attempt less than maxAttempts
-            LR->>RT: publish to *.retry.(attempt) (longer delay)
-        else attempt = maxAttempts
-            LR->>CST: INSERT case_record (E7 / E3, attempts = maxAttempts)
-            LR->>AL: alert
+            KD-->>LR: publish confirmed, done, no case_record
+        else still failing, attempt+1 less than maxAttempts
+            LR->>RT: publish to *.retry.(attempt+1) with the next backoff
+        else attempt+1 = maxAttempts
+            LR->>CST: INSERT case_record, E7 / E3, attempts = maxAttempts, case_state = PENDING_REPORT
+            LR->>AL: high-priority alert, retry exhausted, no .dlt
         end
     end
 ```
 
-**Caption.** The per-category routing (number of levels, backoff profile) is
-configured by a custom `RetryTopicConfiguration`; the category travels in a
-header (ADR 0004). The order of messages that went through the retry topics is
-not guaranteed (RF-30, absorbed by downstream idempotence).
+**Caption.** The routing is done by the adapter itself: the main listener
+publishes the untransformed record to `<sourceTopic>.retry.0` on the source
+cluster through a dedicated source-cluster `byte[]` `KafkaTemplate`, then acks the
+main offset (RF-12). The error category, the attempt number, the per-category
+backoff profile and the `process-after` timestamp travel as message headers
+(retry-topic names and count unchanged, ADR 0004). The `inbound/retry` listener
+applies the delay as a **non-blocking partition pause / resume** (Spring Kafka
+back-off primitives, no `Thread.sleep`) before each re-attempt, then re-runs
+mapping + publish. On the last attempt the `inbound/retry` listener writes the
+`case_record` **itself** — no framework recoverer, no `.dlt` (ADR 0005). The
+order of messages that went through the retry topics is not guaranteed (RF-30,
+absorbed by downstream idempotence).
 
 **Verifiable criteria.**
 

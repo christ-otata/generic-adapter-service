@@ -50,5 +50,7 @@ DA-topic-out).
 - **+** Parallel recovery across all partitions during an incident.
 - **−** `E3` and `E7` share the topic scale: tuning is per header, not per topic.
 - **Constrains downstream:** `devops` provisions `3 × N` retry topics on the
-  source cluster with short retention; `adapter-dev` configures the
-  `RetryTopicConfiguration` with these names.
+  source cluster with short retention; `adapter-dev` uses these names in the
+  retry router and the `inbound/retry` listener (ADR
+  [0002](0002-retry-retryabletopic-e4-deadline.md)), not in a
+  `RetryTopicConfiguration`.

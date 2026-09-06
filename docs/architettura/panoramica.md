@@ -90,7 +90,7 @@ flowchart LR
       O[("orphan_movement (DB)<br/>hold_deadline")]
       SCH["OrphanReprocessor<br/>@Scheduled ~15 s"]
       P["Outbound / Protobuf producer"]
-      RE["Retry engine<br/>@RetryableTopic (E3/E7) + back-pressure (E6)"]
+      RE["Retry engine<br/>manual routing to *.retry.N (E3/E7)<br/>+ back-pressure (E6)"]
       CS[("Case-record store<br/>PENDING_REPORT -> IN_REPORT -> REPORTED")]
       AU[("Audit store")]
       RG["Report runner<br/>@Scheduled + GET_LOCK MySQL per tick"]
@@ -136,7 +136,7 @@ flowchart LR
 | Mapping & in-process processing | Java 21 | String normalization, enum→enum with explicit default, ISO-8601 → `Timestamp` parsing, amounts in minor units, derived and technical fields (`ingestion_time`, `source`, `processing_id`). **No** external calls. | RF-05…08, RF-38 |
 | Anagraphic registry | Spring Data JDBC | Seen users/accounts + latest `version` per `userId` (1:N relation, additive merge of accounts). Existence check for movements; SQL CAS on out-of-sequence updates. | RF-24, RF-25, RF-31 |
 | Orphan-movement handling | `orphan_movement` table + `@Scheduled` | `OrphanHoldService` parks the movement with `hold_deadline` (default `holdTimeout` 60 s). `OrphanReprocessor` every ~15 s: resolved → dedup check, publish, `audit` row + `RESOLVED` in one post-publish tx; expired and not under back-pressure → E4 case record + `EXPIRED`; expired under E6 → hold frozen. No retry topic. | RF-26…28 |
-| Retry engine | Spring Kafka `@RetryableTopic` | Retry topics `*.retry.<n>` with increasing delay for E7 (and E3 when active). `BackPressureController` for E6 (listener pause). `maxAttempts`, backoff configurable. | RF-12, RF-14, RF-15 |
+| Retry engine | Spring Kafka (manual retry routing, ADR 0002) | The adapter publishes failed records to `*.retry.<n>` on the source cluster with category/attempt/backoff headers; the `inbound/retry` backoff listener applies a non-blocking delay and re-attempts, writing a `case_record` on exhaustion. `BackPressureController` for E6 (listener pause). `maxAttempts`, backoff configurable (`gsa.retry.*`). | RF-12, RF-14, RF-15 |
 | Outbound / Protobuf producer | Spring Kafka + `KafkaProtobufSerializer` | Protobuf serialization, schema registration/validation, synchronous `send()` to `UserAccount` and `WalletMovement` preserving the business key; `enable.idempotence=true`, `acks=all`. | RF-06, RF-09, RF-10, RF-37 |
 | Case-record store | Spring Data JDBC | State machine `PENDING_REPORT` → `IN_REPORT` → `REPORTED` with guarded updates. One record per non-retriable message (E1/E2/E5) or per retry exhaustion (E7/E3/E4). | RF-13, RF-16, RF-32 |
 | Audit store | Spring Data JDBC | One record per successfully published message, with origin `topic/partition/offset`, business keys and `processing_id`, written **before** the offset commit. `UNIQUE (txn_dedup, published_date)` on the generated columns `txn_dedup` + `published_date` (`DATE(published_at)`) for movement skip-republish; `published_at` stays as a full-precision non-key column. | RF-29, RNF-14 |
@@ -181,7 +181,7 @@ flowchart TB
 | Area | Choice | Note |
 |---|---|---|
 | Runtime | Java 21, Spring Boot 4.1.1, Maven (`./mvnw`) | base package `it.generic_service_adapter` |
-| Messaging | Spring Kafka; `@RetryableTopic` for E3/E7; **no DLT** (ADR 0005) | two distinct clusters (source, destination); retry topics on the source (ADR 0006) |
+| Messaging | Spring Kafka; manual retry routing to source-cluster `*.retry.<n>` for E3/E7 (ADR 0002); **no DLT** (ADR 0005) | two distinct clusters (source, destination); retry topics on the source (ADR 0006) |
 | Outbound serialization | Protobuf + `KafkaProtobufSerializer` + Confluent Schema Registry (`TopicNameStrategy`, `BACKWARD` compat) | `.proto` contract owned by this repo (ADR 0012, 0013, 0015) |
 | Persistence | **MySQL 8.0** via **Spring Data JDBC**; **Flyway** migrations (`flyway-mysql`) | registry, orphans, case records, `report_file`, audit (ADR 0010, 0011) |
 | Report | XML marshalling per the versioned XSD; `RestClient` towards the Vault | single-instance in-process runner (ADR 0016) |
