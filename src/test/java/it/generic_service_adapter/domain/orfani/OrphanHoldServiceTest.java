@@ -78,6 +78,16 @@ class OrphanHoldServiceTest {
     }
 
     @Override
+    public boolean touch(String id, LocalDateTime checkedAt) {
+      return false;
+    }
+
+    @Override
+    public long countHeld() {
+      return inserted.stream().filter(r -> r.state() == OrphanState.HELD).count();
+    }
+
+    @Override
     public boolean markResolved(String id, LocalDateTime checkedAt) {
       return false;
     }

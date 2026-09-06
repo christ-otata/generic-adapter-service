@@ -3,7 +3,6 @@ package it.generic_service_adapter.domain.orfani;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.util.UUID;
 
 /**
@@ -17,9 +16,10 @@ import java.util.UUID;
  * by {@code config/orfani/OrphanHoldConfig}, takes plain data ({@link OrphanHoldCommand}) and calls
  * the {@link OrphanStore} port. The clock is UTC and injectable for tests; ids are random UUIDs.
  *
- * <p><b>Out of scope for this WP (WP4):</b> the {@code OrphanReprocessor} scheduler and the resolve
- * / expire / E4 transitions ({@code markResolved} / {@code markExpired}, back-pressure freeze) are
- * WP5. This class only inserts the {@code HELD} row.
+ * <p>This class only inserts the {@code HELD} row. The {@code OrphanReprocessor} scheduler and the
+ * resolve / expire / E4 transitions ({@code markResolved} / {@code markExpired}, back-pressure
+ * freeze) live in {@code inbound/schedule/OrphanReprocessor} (WP5), which shares the same injected
+ * {@link Clock} bean so tests can drive the grace window deterministically.
  */
 public class OrphanHoldService {
 
@@ -27,11 +27,7 @@ public class OrphanHoldService {
   private final Duration holdTimeout;
   private final Clock clock;
 
-  public OrphanHoldService(OrphanStore orphanStore, Duration holdTimeout) {
-    this(orphanStore, holdTimeout, Clock.system(ZoneOffset.UTC));
-  }
-
-  OrphanHoldService(OrphanStore orphanStore, Duration holdTimeout, Clock clock) {
+  public OrphanHoldService(OrphanStore orphanStore, Duration holdTimeout, Clock clock) {
     this.orphanStore = orphanStore;
     this.holdTimeout = holdTimeout;
     this.clock = clock;
