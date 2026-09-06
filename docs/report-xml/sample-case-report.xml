@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NON-NORMATIVE example instance for case-report-v1.xsd.
+  Golden reference for the ReportAssembler tests.
+  Validation command: see docs/report-xml/README.md
+
+  Covers: 3 cases / 3 error categories (E1, E2, E4) / 3 source topics,
+  one case (E4 expired orphan) with no errorDetail, and rawPayload holding
+  XML-escaped JSON that exercises the five predefined entities.
+-->
+<caseReport xmlns="urn:generic-service-adapter:case-report:v1" schemaVersion="v1">
+  <header>
+    <windowFrom>2026-09-06T09:00:00Z</windowFrom>
+    <windowTo>2026-09-06T09:15:00Z</windowTo>
+    <environment>prod</environment>
+    <adapterVersion>1.7.0</adapterVersion>
+    <counts>
+      <byErrorCategory>
+        <category code="E1" count="1"/>
+        <category code="E2" count="1"/>
+        <category code="E4" count="1"/>
+      </byErrorCategory>
+      <bySourceTopic>
+        <topic name="user-account-data" count="1"/>
+        <topic name="wallet-account-topup" count="1"/>
+        <topic name="wallet-account-withdrawal" count="1"/>
+      </bySourceTopic>
+      <caseCount>3</caseCount>
+    </counts>
+  </header>
+  <cases>
+    <case caseId="3f2504e0-4f89-41d3-9a0c-0305e82c3301">
+      <detectedAt>2026-09-06T09:03:22Z</detectedAt>
+      <sourceTopic>wallet-account-topup</sourceTopic>
+      <sourcePartition>3</sourcePartition>
+      <sourceOffset>148573</sourceOffset>
+      <messageKey>acc-10022</messageKey>
+      <businessKeys>
+        <userId>usr-55231</userId>
+        <accountId>acc-10022</accountId>
+        <transactionId>txn-7f3a91c2</transactionId>
+      </businessKeys>
+      <errorCategory>E2</errorCategory>
+      <errorDetail>jakarta.validation: amount.minorUnits must be a non-negative integer (was "12.50"); currency must match ISO-4217 [EUR, USD, GBP]</errorDetail>
+      <attempts>0</attempts>
+      <firstFailureAt>2026-09-06T09:03:22Z</firstFailureAt>
+      <lastFailureAt>2026-09-06T09:03:22Z</lastFailureAt>
+      <rawPayload maxBytes="1048576">{&quot;transactionId&quot;:&quot;txn-7f3a91c2&quot;,&quot;userId&quot;:&quot;usr-55231&quot;,&quot;accountId&quot;:&quot;acc-10022&quot;,&quot;amount&quot;:&quot;12.50&quot;,&quot;currency&quot;:&quot;eur&quot;,&quot;channel&quot;:&quot;BANK_TRANSFER&quot;,&quot;eventTimestamp&quot;:&quot;2026-09-06T08:59:12Z&quot;,&quot;valueDate&quot;:&quot;2026-09-06&quot;,&quot;note&quot;:&quot;top-up for A&amp;B &lt;retail&gt; \&quot;Q3 promo\&quot; when x&gt;0 &amp;&amp; y&lt;100&quot;}</rawPayload>
+    </case>
+    <case caseId="9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d">
+      <detectedAt>2026-09-06T09:07:45Z</detectedAt>
+      <sourceTopic>user-account-data</sourceTopic>
+      <sourcePartition>0</sourcePartition>
+      <sourceOffset>99201</sourceOffset>
+      <messageKey>usr-55231</messageKey>
+      <businessKeys/>
+      <errorCategory>E1</errorCategory>
+      <errorDetail>com.fasterxml.jackson.core.JsonParseException: Unexpected end-of-input in field name at [Source: (String)"{"userId":"usr-55231","accoun"; line: 1, column: 41]</errorDetail>
+      <attempts>0</attempts>
+      <firstFailureAt>2026-09-06T09:07:45Z</firstFailureAt>
+      <lastFailureAt>2026-09-06T09:07:45Z</lastFailureAt>
+      <rawPayload maxBytes="1048576">{&quot;userId&quot;:&quot;usr-55231&quot;,&quot;accounts&quot;:[{&quot;accountId&quot;:&quot;acc-10022&quot;,&quot;status&quot;:&quot;ACTIVE&quot;}],&quot;firstName&quot;:&quot;Íñigo&quot;,&quot;lastName&quot;:&quot;O'Brien &amp; Sons&quot;,&quot;email&quot;:&quot;inigo@example.com&quot;,&quot;note&quot;:&quot;needs &lt;review&gt; when total&gt;0&quot;,&quot;status&quot;:&quot;ACTIVE&quot;,&quot;eventType&quot;:&quot;UPDATED&quot;,&quot;version&quot;:</rawPayload>
+    </case>
+    <case caseId="7c9e6679-7425-40de-944b-e07fc1f90ae7">
+      <detectedAt>2026-09-06T09:10:05Z</detectedAt>
+      <sourceTopic>wallet-account-withdrawal</sourceTopic>
+      <sourcePartition>5</sourcePartition>
+      <sourceOffset>220914</sourceOffset>
+      <messageKey>acc-88190</messageKey>
+      <businessKeys>
+        <userId>usr-70044</userId>
+        <accountId>acc-88190</accountId>
+        <transactionId>txn-a1b2c3d4</transactionId>
+      </businessKeys>
+      <errorCategory>E4</errorCategory>
+      <attempts>0</attempts>
+      <firstFailureAt>2026-09-06T07:10:05Z</firstFailureAt>
+      <lastFailureAt>2026-09-06T09:10:05Z</lastFailureAt>
+      <rawPayload maxBytes="1048576">{&quot;transactionId&quot;:&quot;txn-a1b2c3d4&quot;,&quot;userId&quot;:&quot;usr-70044&quot;,&quot;accountId&quot;:&quot;acc-88190&quot;,&quot;amount&quot;:2500,&quot;currency&quot;:&quot;USD&quot;,&quot;direction&quot;:&quot;DEBIT&quot;,&quot;channel&quot;:&quot;CARD&quot;,&quot;authorizationId&quot;:&quot;auth-6612&quot;,&quot;merchant&quot;:&quot;ACME &amp; Co &lt;online&gt;&quot;,&quot;reason&quot;:&quot;purchase \&quot;widget\&quot; qty&gt;1&quot;,&quot;eventTimestamp&quot;:&quot;2026-09-06T07:10:00Z&quot;,&quot;valueDate&quot;:&quot;2026-09-06&quot;}</rawPayload>
+    </case>
+  </cases>
+</caseReport>

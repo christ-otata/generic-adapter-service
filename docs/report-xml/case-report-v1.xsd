@@ -1,0 +1,305 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:generic-service-adapter:case-report:v1"
+           targetNamespace="urn:generic-service-adapter:case-report:v1"
+           elementFormDefault="qualified"
+           attributeFormDefault="unqualified"
+           version="1.0">
+
+  <xs:annotation>
+    <xs:documentation xml:lang="en">
+      generic-service-adapter :: case-report :: v1
+
+      Normative schema for the XML compliance report that the in-process
+      ReportRunner assembles from PENDING_REPORT case_record rows and ships to
+      the Vault (RF-17..RF-21, RF-33, RF-34).
+
+      Target namespace : urn:generic-service-adapter:case-report:v1
+      Version marker   : version="1.0" on this schema element; the root element
+                         also carries an optional schemaVersion attribute fixed
+                         to "v1". A breaking change ships as a NEW namespace
+                         (urn:generic-service-adapter:case-report:v2) in a new
+                         file, never as an in-place edit of this one.
+
+      Boundaries are fixed by docs/architettura/contratti.md section 5 and by
+      ADR 0013 / ADR 0016 / ADR 0019. The field set mirrors the case_record
+      table (src/main/resources/db/migration/V1__schema.sql) and the domain
+      record it.generic_service_adapter.domain.casistica.CaseRecord.
+
+      Every xs:sequence below is ordered deterministically: the assembler emits
+      children in exactly this order, so byte-for-byte golden-file comparisons
+      in the assembler tests stay stable.
+
+      All xs:dateTime values are UTC instants (trailing "Z"); the producer
+      writes them that way. NO PII masking is applied anywhere in this document
+      (ADR 0019): rawPayload carries the full original JSON, XML-escaped.
+    </xs:documentation>
+  </xs:annotation>
+
+  <!-- =================================================================== -->
+  <!-- Reusable simple types                                                -->
+  <!-- =================================================================== -->
+
+  <xs:simpleType name="Uuid">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        RFC 4122 textual UUID: five hex groups 8-4-4-4-12. Hex digits are
+        accepted in either case (producers emit lowercase). Used for caseId.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="ErrorCategory">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        The E1..E7 error taxonomy (topologia-kafka.md; domain enum
+        it.generic_service_adapter.domain.model.ErrorCategory). This is the one
+        and only place in the schema where the taxonomy is enforced; the same
+        type is reused for the header category breakdown. E6 drives
+        back-pressure and never produces a case_record, but it is kept in the
+        enumeration so the schema matches the taxonomy 1:1.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="E1"/>
+      <xs:enumeration value="E2"/>
+      <xs:enumeration value="E3"/>
+      <xs:enumeration value="E4"/>
+      <xs:enumeration value="E5"/>
+      <xs:enumeration value="E6"/>
+      <xs:enumeration value="E7"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="SchemaVersionTag">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        Redundant version tag for humans and dumb tooling; the authoritative
+        version signal is the target namespace. When present it MUST be "v1".
+      </xs:documentation>
+    </xs:annotation>
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="v1"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- =================================================================== -->
+  <!-- Root                                                                 -->
+  <!-- =================================================================== -->
+
+  <xs:element name="caseReport">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        Report root: one document per report_file row. A header (window, origin
+        environment, adapter build, aggregate counts) followed by the 1..N case
+        entries that make up the report. The document is stored and sent as
+        report-&lt;report_file.id&gt;.xml; a retried send reuses the same name
+        for Vault-side idempotence (RF-20, ADR 0016).
+      </xs:documentation>
+    </xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="header" type="Header"/>
+        <xs:element name="cases" type="Cases"/>
+      </xs:sequence>
+      <xs:attribute name="schemaVersion" type="SchemaVersionTag" use="optional" fixed="v1"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- =================================================================== -->
+  <!-- Header                                                               -->
+  <!-- =================================================================== -->
+
+  <xs:complexType name="Header">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        Report-level metadata.
+        windowFrom / windowTo bound the detection window of the included case
+        records (UTC instants). A single case's firstFailureAt MAY predate
+        windowFrom (retry exhaustion, orphan expiry).
+        environment is a free string, conventionally "dev" or "prod" - it is
+        deliberately NOT hard-restricted so a new environment name does not
+        break validation.
+        adapterVersion is the adapter build that produced the report.
+        counts is the aggregate breakdown.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="windowFrom" type="xs:dateTime"/>
+      <xs:element name="windowTo" type="xs:dateTime"/>
+      <xs:element name="environment" type="xs:string"/>
+      <xs:element name="adapterVersion" type="xs:string"/>
+      <xs:element name="counts" type="Counts"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="Counts">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        Aggregate breakdown of the report. byErrorCategory and bySourceTopic
+        are always-present containers; each holds zero-or-more entries, one per
+        value actually present in this report. caseCount is the total number of
+        &lt;case&gt; elements and equals the sum of the byErrorCategory entry
+        counts (E6 never yields a case record, so it never appears here).
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="byErrorCategory" type="ByErrorCategory"/>
+      <xs:element name="bySourceTopic" type="BySourceTopic"/>
+      <xs:element name="caseCount" type="xs:nonNegativeInteger"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="ByErrorCategory">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        Zero-or-more &lt;category&gt; entries, one per E1..E7 value present in
+        this report, emitted in ascending taxonomy order (E1 before E2 ...).
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="category" type="CategoryCount" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="CategoryCount">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        One error-category tally. Empty element: the category is the "code"
+        attribute (E1..E7 enum) and the tally is the "count" attribute.
+        count is xs:positiveInteger because an entry is emitted only for a
+        category that is present, so its tally is always at least 1.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:attribute name="code" type="ErrorCategory" use="required"/>
+    <xs:attribute name="count" type="xs:positiveInteger" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="BySourceTopic">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        Zero-or-more &lt;topic&gt; entries, one per source topic present in this
+        report, emitted in ascending topic-name order. The topic name is an
+        unrestricted string on purpose: retry topics (name.retry.n) and any
+        future origin MUST NOT break validation.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="topic" type="TopicCount" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="TopicCount">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        One source-topic tally. Empty element: "name" is the plain topic string
+        and "count" is the positive tally (an entry is emitted only for a topic
+        that is present).
+      </xs:documentation>
+    </xs:annotation>
+    <xs:attribute name="name" type="xs:string" use="required"/>
+    <xs:attribute name="count" type="xs:positiveInteger" use="required"/>
+  </xs:complexType>
+
+  <!-- =================================================================== -->
+  <!-- Cases                                                                -->
+  <!-- =================================================================== -->
+
+  <xs:complexType name="Cases">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        1..N case entries. A report is produced only when there is at least one
+        PENDING_REPORT case record, so the collection is never empty.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="case" type="Case" minOccurs="1" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="Case">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        One failed / expired inbound message, mirroring a case_record row.
+        caseId (UUID) is an attribute. Children, in emission order:
+          detectedAt        - UTC instant the failure/expiry was detected
+          sourceTopic       - inbound Kafka topic
+          sourcePartition   - inbound Kafka partition
+          sourceOffset      - inbound Kafka offset
+          messageKey        - inbound message key
+          businessKeys      - best-effort id extraction; every child MAY be
+                              absent (all three absent for a malformed-JSON E1)
+          errorCategory     - E1..E7 (enforced here)
+          errorDetail       - technical exception text; ABSENT when there is
+                              none, e.g. an expired-orphan E4 case
+          attempts          - retry attempts made before landing here
+          firstFailureAt    - UTC instant of the first failure (may predate
+                              detectedAt for E3/E7 retry exhaustion)
+          lastFailureAt     - UTC instant of the most recent failure
+          rawPayload        - full original JSON, XML-escaped (LAST child)
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="detectedAt" type="xs:dateTime"/>
+      <xs:element name="sourceTopic" type="xs:string"/>
+      <xs:element name="sourcePartition" type="xs:int"/>
+      <xs:element name="sourceOffset" type="xs:long"/>
+      <xs:element name="messageKey" type="xs:string"/>
+      <xs:element name="businessKeys" type="BusinessKeys"/>
+      <xs:element name="errorCategory" type="ErrorCategory"/>
+      <xs:element name="errorDetail" type="xs:string" minOccurs="0"/>
+      <xs:element name="attempts" type="xs:nonNegativeInteger"/>
+      <xs:element name="firstFailureAt" type="xs:dateTime"/>
+      <xs:element name="lastFailureAt" type="xs:dateTime"/>
+      <xs:element name="rawPayload" type="RawPayload"/>
+    </xs:sequence>
+    <xs:attribute name="caseId" type="Uuid" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="BusinessKeys">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        Business identifiers extracted from the failing payload, best effort.
+        Each child is optional and independent; the whole set is absent
+        (empty &lt;businessKeys/&gt;) when nothing could be extracted, e.g. a
+        malformed-JSON E1 case. transactionId is movements-only.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="userId" type="xs:string" minOccurs="0"/>
+      <xs:element name="accountId" type="xs:string" minOccurs="0"/>
+      <xs:element name="transactionId" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="RawPayload">
+    <xs:annotation>
+      <xs:documentation xml:lang="en">
+        The FULL original inbound JSON payload of the failed message (RF-34),
+        carried as XML-escaped character data - NOT a CDATA section
+        (AD-xsd-rawpayload-encoding, Batch 12; ADR 0019 and contratti.md
+        section 5 supersede the older "CDATA" wording). The five predefined
+        entities (&amp;lt; &amp;gt; &amp;amp; &amp;quot; &amp;apos;) carry every
+        special character, so a conforming parser round-trips the element text
+        back to the exact original JSON. NO PII masking is applied.
+
+        The required maxBytes attribute (xs:positiveInteger) states the size
+        cap, in UTF-8 bytes, that the producer actually enforced on the payload
+        BEFORE escaping (RF-34); a payload longer than maxBytes is truncated by
+        the producer to that many bytes.
+
+        This is the LAST child of &lt;case&gt; by design: it is the largest and
+        the only free-form field.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:simpleContent>
+      <xs:extension base="xs:string">
+        <xs:attribute name="maxBytes" type="xs:positiveInteger" use="required"/>
+      </xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+
+</xs:schema>
