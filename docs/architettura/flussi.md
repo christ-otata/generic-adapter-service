@@ -11,7 +11,7 @@ Each flow ends with the **verifiable criteria** for the testers.
 sequenceDiagram
     autonumber
     participant K as Kafka source<br/>user-account-data
-    participant LA as inbound/anagrafica
+    participant LA as inbound/anagrafica<br/>(orchestrator)
     participant CM as inbound/common
     participant MA as mapping/anagrafica
     participant REG as AnagraphicRegistry
@@ -23,38 +23,46 @@ sequenceDiagram
     K->>LA: registry event (JSON, key=userId)
     LA->>CM: bytes + metadata (topic/partition/offset)
     CM->>CM: parse JSON + structural validation (E1/E2)
-    CM->>MA: validated payload + ProcessingContext
+    CM-->>LA: validated payload + ProcessingContext
+    LA->>MA: build internal model from validated payload
     MA->>MA: normalize, enum to default (RF-08), full_name, technical fields
-    MA->>UAP: UserAccount (internal model) — always published (ASS-3)
+    MA-->>LA: UserAccount (internal model)
+    LA->>UAP: publish UserAccount via port — always published (ASS-3)
     UAP->>SR: validate/register Protobuf schema (subject UserAccount-value)
     UAP->>KD: send(key=userId).get()  [synchronous, acks=all]
     KD-->>UAP: RecordMetadata
-    UAP-->>MA: publish confirmed
-    Note over MA,AUD: one local DB transaction opens only now (ADR 0008) and wraps only the DB writes
-    MA->>REG: CAS: UPDATE anag_user SET last_version = :incoming WHERE last_version less than :incoming
+    UAP-->>LA: publish confirmed
+    Note over LA,AUD: the orchestrator opens one local DB transaction only now (ADR 0008) and wraps only the DB writes
+    LA->>REG: CAS: UPDATE anag_user SET last_version = :incoming WHERE last_version less than :incoming
+    REG-->>LA: rows updated (1 or 0)
     alt version greater (1 row updated)
-        REG->>REG: additive merge of accounts[] (RF-31)
-        REG-->>MA: registry updated
+        LA->>REG: mergeAccounts: additive merge of accounts[] (RF-31)
+        REG-->>LA: registry updated
     else version not greater (0 rows)
-        REG-->>MA: registry no-op — CAS matched 0 rows (RF-31)
+        LA->>LA: registry no-op — CAS matched 0 rows (RF-31)
     end
-    MA->>AUD: INSERT audit (topic/partition/offset, user_id, user_version) (RF-29)
-    AUD-->>MA: ok — DB transaction commits
-    MA-->>LA: outcome = published and persisted
+    LA->>AUD: INSERT audit (topic/partition/offset, user_id, user_version) (RF-29)
+    AUD-->>LA: ok — DB transaction commits
     LA->>K: ack MANUAL_IMMEDIATE (only now — RF-11)
 ```
 
-**Caption.** Mapping builds the `UserAccount` message and the publish to the
-destination topic happens **first**, synchronously (`send(key=userId).get()`,
-`acks=all`), for every event — including events carrying a stale `version`
-(ASS-3). Only **after** the publish is confirmed does a single local DB
-transaction open; it wraps only the DB writes: the `AnagraphicRegistry` CAS
-(`WHERE last_version < :incoming`), the additive `accounts[]` merge (only when the
-CAS updated a row) and the `audit` INSERT (RF-29). The offset
-`ack MANUAL_IMMEDIATE` is last, after that transaction commits (RF-11, ADR 0008).
-No transaction is ever held open across the network publish. The registry no-op
-path is a CAS that matched 0 rows inside the post-publish transaction; the
-message already published is unaffected.
+**Caption.** The `mapping/anagrafica` mapper only builds the `UserAccount`
+internal model (normalization, enum default RF-08, `full_name`, technical
+fields); it is Spring-free and drives no orchestration. The `inbound/anagrafica`
+orchestrator owns the sequence: it calls the `UserAccountPublisher` port, so the
+publish to the destination topic happens **first**, synchronously
+(`send(key=userId).get()`, `acks=all`), for every event — including events
+carrying a stale `version` (ASS-3). Only **after** the publish is confirmed does
+the orchestrator open a single local DB transaction; it wraps only the DB writes:
+the `AnagraphicRegistry` CAS (`WHERE last_version < :incoming`), the additive
+`accounts[]` merge and the `audit` INSERT (RF-29). The orchestrator — not the
+registry adapter — inspects the CAS row count and calls
+`AnagraphicRegistry.mergeAccounts` only when the CAS updated a row; the registry
+adapter has no CAS-outcome awareness. The offset `ack MANUAL_IMMEDIATE` is last,
+after that transaction commits (RF-11, ADR 0008). No transaction is ever held
+open across the network publish. The registry no-op path is a CAS that matched 0
+rows inside the post-publish transaction; the message already published is
+unaffected.
 
 **Verifiable criteria.**
 
