@@ -1,0 +1,76 @@
+# ============================================================================
+# compose.e2e.yaml — the dev stack (compose.yaml) PLUS the adapter itself as a
+# black-box container, for the `-Pe2e` Failsafe suite (WP9 / milestone M9).
+#
+# `include:` pulls in every service from compose.yaml verbatim (Compose spec,
+# Docker Compose >= v2.20). Nothing is duplicated here: this file only adds the
+# `adapter` service and reuses the healthchecks now declared in compose.yaml.
+#
+# ---------------------------------------------------------------------------
+# Start the whole stack (builds the adapter image from Dockerfile.e2e):
+#   docker compose -f compose.e2e.yaml up --build -d
+#
+# Run the e2e suite (from the host, against the published ports below):
+#   ./mvnw verify -Pe2e
+#
+# Restart only the adapter (chaos: app bounce):
+#   docker compose -f compose.e2e.yaml restart adapter
+#
+# Fault injection — take a downstream dependency down / back up:
+#   docker compose -f compose.e2e.yaml stop  kafka-destination
+#   docker compose -f compose.e2e.yaml start kafka-destination
+#
+# Tear everything down (and drop volumes / the report spool):
+#   docker compose -f compose.e2e.yaml down -v
+#
+# ---------------------------------------------------------------------------
+# Host ports the suite talks to:
+#   adapter Actuator/Prometheus .. http://localhost:18080/actuator/...
+#   kafka-source (produce) ....... localhost:19092
+#   kafka-destination (consume) .. localhost:29092
+#   schema-registry .............. http://localhost:8081
+#   mysql ....................... localhost:3307  (db gsa, user gsa/gsa)
+#   vault-mock .................. http://localhost:8888
+# XML report spool (black-box file inspection): ./data/e2e-report-spool
+# ============================================================================
+
+include:
+  - compose.yaml
+
+services:
+
+  # The adapter under test. Image is built from source inside Dockerfile.e2e, so
+  # the running container never depends on the host's target/ state.
+  adapter:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    container_name: gsa-adapter
+    environment:
+      SPRING_PROFILES_ACTIVE: e2e
+    depends_on:
+      kafka-source:
+        condition: service_healthy
+      kafka-destination:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      vault-mock:
+        condition: service_healthy
+    ports:
+      # Actuator is on the main server port (no separate management port). The
+      # Failsafe suite runs on the host and scrapes /actuator/* through this.
+      - "18080:8080"
+    volumes:
+      # application-e2e.yml sets gsa.report.xml-spool-directory=/data/report-spool.
+      - ./data/e2e-report-spool:/data/report-spool
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/readiness >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    # The chaos scenarios drive stop/start/restart explicitly; never auto-restart.
+    restart: "no"

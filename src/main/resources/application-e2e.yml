@@ -1,0 +1,83 @@
+# e2e profile — the adapter running as a container ON the compose.e2e.yaml
+# network (SPRING_PROFILES_ACTIVE=e2e, set by compose.e2e.yaml). Same shape as
+# application-dev.yml; the ONLY difference is that every endpoint uses the
+# in-network service hostname instead of localhost:<published-port>, because the
+# adapter now resolves peers over the compose bridge, not from the host.
+#
+# WP9 test-harness profile, not a deployment environment (RNF-09 lists dev/prod
+# only — see the WP9-hooks doc-delta log). Nothing here is a real secret: the
+# credentials are the throwaway values from compose.yaml, safe to commit.
+spring:
+  docker:
+    compose:
+      # No compose.yaml is shipped inside the image; make the intent explicit so
+      # spring-boot-docker-compose never tries to manage the stack from within.
+      enabled: false
+  datasource:
+    url: jdbc:mysql://mysql:3306/gsa?useSSL=false&allowPublicKeyRetrieval=true
+    username: gsa
+    password: gsa
+  flyway:
+    url: jdbc:mysql://mysql:3306/gsa?useSSL=false&allowPublicKeyRetrieval=true
+    user: gsa
+    password: gsa
+
+logging:
+  level:
+    it.generic_service_adapter: DEBUG
+
+gsa:
+  kafka:
+    source:
+      bootstrap-servers: kafka-source:9092
+      security-protocol: PLAINTEXT
+      sasl-mechanism:
+      sasl-username:
+      sasl-password:
+      # = partition count (3 dev, topologia-kafka.md)
+      concurrency: 3
+      max-poll-records: 200
+    destination:
+      bootstrap-servers: kafka-destination:9092
+      security-protocol: PLAINTEXT
+      sasl-mechanism:
+      sasl-username:
+      sasl-password:
+      linger-millis: 5
+      batch-size: 16384
+
+  retry:
+    # = retry-topic partition count (3 dev, topologia-kafka.md)
+    concurrency: 3
+    # rely on the broker's auto.create.topics.enable when the router first
+    # produces to *.retry.0 (the adapter never issues an AdminClient create).
+    auto-create: true
+
+  schema-registry:
+    url: http://schema-registry:8081
+    basic-auth-user-info:
+    auto-register-schemas: true
+    use-latest-version: false
+
+  vault:
+    endpoint: http://vault-mock:8080/report
+    connect-timeout: 2s
+    read-timeout: 5s
+    max-attempts: 3
+    backoff-initial: 500ms
+    backoff-max: 5s
+
+  report:
+    # Path inside the container; compose.e2e.yaml bind-mounts it to
+    # ./data/e2e-report-spool on the host for black-box XML inspection.
+    xml-spool-directory: /data/report-spool
+    environment: e2e
+
+  # Low thresholds on purpose, identical to application-dev.yml (nfr.md).
+  alert-thresholds:
+    consumer-lag-threshold: 100
+    backlog-age-threshold: 30s
+    case-record-rate-per-minute-threshold: 5
+    oldest-unsent-report-age-threshold: 2m
+    report-queue-length-threshold: 5
+    orphans-discarded-threshold: 1
