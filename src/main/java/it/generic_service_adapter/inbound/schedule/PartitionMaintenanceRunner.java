@@ -54,7 +54,10 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class PartitionMaintenanceRunner {
 
-  static final String CREATED_METRIC = "gsa_partitions_created_total";
+  // "provisioned", not "created": Micrometer's Prometheus renderer treats a "_created" stem as the
+  // OpenMetrics reserved suffix and would mangle "gsa_partitions_created_total" to
+  // "gsa_partitions_total". Same counter, safe name (see the WP8 doc-delta log).
+  static final String CREATED_METRIC = "gsa_partitions_provisioned_total";
   static final String DROPPED_METRIC = "gsa_partitions_dropped_total";
   static final String DROP_SKIPPED_METRIC = "gsa_partition_drop_skipped_total";
 

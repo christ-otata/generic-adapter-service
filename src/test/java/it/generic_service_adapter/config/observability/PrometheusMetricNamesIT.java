@@ -111,6 +111,14 @@ class PrometheusMetricNamesIT {
   @Autowired EmbeddedKafkaBroker embeddedKafka;
   @Autowired MeterRegistry meterRegistry;
 
+  /** WP8 additions not in the nfr.md table (see the WP8 doc-delta log). */
+  private static final List<String> EXPECTED_WP8_EXTRA_METRICS =
+      List.of(
+          "gsa_alert_active",
+          "gsa_partitions_provisioned_total",
+          "gsa_partitions_dropped_total",
+          "gsa_partition_drop_skipped_total");
+
   @Test
   void everyGsaMetricFromNfrIsExposedOnActuatorPrometheus() throws Exception {
     String scrape =
@@ -119,6 +127,16 @@ class PrometheusMetricNamesIT {
     List<String> missing =
         EXPECTED_GSA_METRICS.stream().filter(name -> !scrape.contains(name)).toList();
     assertThat(missing).as("gsa_* metric names absent from /actuator/prometheus").isEmpty();
+  }
+
+  @Test
+  void theWp8AddedMetricsAreAlsoExposed() throws Exception {
+    String scrape =
+        mockMvc.perform(get("/actuator/prometheus")).andReturn().getResponse().getContentAsString();
+
+    List<String> missing =
+        EXPECTED_WP8_EXTRA_METRICS.stream().filter(name -> !scrape.contains(name)).toList();
+    assertThat(missing).as("WP8-added metric names absent from /actuator/prometheus").isEmpty();
   }
 
   @Test

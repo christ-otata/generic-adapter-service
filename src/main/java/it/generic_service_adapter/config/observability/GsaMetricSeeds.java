@@ -67,6 +67,13 @@ public class GsaMetricSeeds {
       Counter.builder("gsa_orphans_hold_frozen_total").register(registry);
       Counter.builder("gsa_orphans_expired_total").register(registry);
       Counter.builder("gsa_audit_rows_written_total").register(registry);
+
+      // WP8 partition-maintenance counters (not in nfr.md — see the WP8 doc-delta log)
+      for (String table : new String[] {"audit", "case_record"}) {
+        Counter.builder("gsa_partitions_provisioned_total").tag("table", table).register(registry);
+        Counter.builder("gsa_partitions_dropped_total").tag("table", table).register(registry);
+        Counter.builder("gsa_partition_drop_skipped_total").tag("table", table).register(registry);
+      }
     };
   }
 }
