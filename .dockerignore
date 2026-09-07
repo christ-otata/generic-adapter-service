@@ -1,0 +1,39 @@
+# Keep the Dockerfile.e2e build context small: the jar is rebuilt from src/ +
+# pom.xml + the Maven wrapper inside the image, nothing else is needed.
+# (Consumed by Dockerfile.e2e; devops' production Dockerfile can add its own.)
+
+# Build output — always rebuilt in the image
+target/
+build/
+dist/
+
+# VCS + docs + tooling not needed to compile
+.git/
+.github/
+docs/
+pandoc/
+Makefile
+HELP.md
+README.md
+
+# Local dev runtime data (XML report spool bind mounts)
+data/
+
+# IDE / editor / OS cruft
+.idea/
+.vscode/
+.mvn/wrapper/maven-wrapper.jar
+*.iml
+*.iws
+*.ipr
+.DS_Store
+
+# Compose + Docker files themselves
+compose.yaml
+compose.e2e.yaml
+Dockerfile
+Dockerfile.e2e
+.dockerignore
+
+# Claude config
+.claude/

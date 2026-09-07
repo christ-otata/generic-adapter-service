@@ -1,0 +1,46 @@
+# e2e-only, minimal; devops owns the production multi-stage Dockerfile.
+#
+# This image exists solely so the adapter can run as a black-box container on the
+# same network as the compose.e2e.yaml stack, driven by the `-Pe2e` Failsafe
+# suite. It is NOT tuned for size, security or reproducibility: the canonical
+# `Dockerfile` slot is deliberately left free for the devops multi-stage build
+# (layered jar, non-root user, jlink runtime, SBOM, ...).
+#
+# Build + run:  docker compose -f compose.e2e.yaml up --build
+#
+# The jar is rebuilt INSIDE the image (not copied from the host target/), so the
+# container is reproducible from source and the host build state is irrelevant.
+
+# --- build stage: repackaged Spring Boot jar from source --------------------------
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /build
+
+# Maven wrapper + POM first: this layer is cached and only invalidated when the
+# dependency set changes, so a source-only edit does not re-download the world.
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
+RUN ./mvnw -q -B -DskipTests dependency:go-offline || true
+
+COPY src/ src/
+RUN ./mvnw -q -B -DskipTests package
+
+# --- runtime stage: JRE + the fat jar -------------------------------------------
+FROM eclipse-temurin:21-jre AS runtime
+WORKDIR /app
+
+# curl is used by the compose healthcheck (curl -f .../actuator/health/readiness).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy the repackaged boot jar only. The thin artifact is `*.jar.original`
+# (Spring Boot 4 naming), which the *.jar glob does not match; a `*-plain.jar`
+# would be excluded here too, defensively.
+COPY --from=build /build/target/*.jar /app/app.jar
+RUN find /app -name '*-plain.jar' -delete
+
+# Actuator / management runs on the main server port (no separate management port
+# is configured). compose.e2e.yaml publishes it on the host as 18080.
+EXPOSE 8080
+
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
