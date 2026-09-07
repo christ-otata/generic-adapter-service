@@ -68,6 +68,10 @@ public final class LoadGenerator {
     long nextSlot = System.nanoTime();
     long seq = 0;
     int emittedUsers = 0;
+    // Distinct per-run() nonce so a steady run and a burst run of the SAME spec never emit the same
+    // transactionId (which the adapter would legitimately dedup as a same-day replay, inflating
+    // "produced" past "published").
+    String runNonce = Long.toString(System.nanoTime(), 36);
 
     Instant startedAt = Instant.now();
     try (KafkaProducer<String, byte[]> producer = KafkaSupport.sourceProducer()) {
@@ -92,7 +96,7 @@ public final class LoadGenerator {
           int userIdx =
               ThreadLocalRandom.current().nextInt(Math.min(emittedUsers, spec.maxUsers()));
           String topic = topup ? E2eEnv.T_TOPUP : E2eEnv.T_WITHDRAWAL;
-          String txn = spec.runToken() + "-M-" + (seq++);
+          String txn = spec.runToken() + "-M-" + runNonce + "-" + (seq++);
           producer.send(
               new ProducerRecord<>(
                   topic,

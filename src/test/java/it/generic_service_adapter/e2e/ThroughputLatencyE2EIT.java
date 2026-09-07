@@ -40,6 +40,8 @@ class ThroughputLatencyE2EIT extends AbstractE2EIT {
 
   private static final long LAG_EPSILON = 25;
   private String likeToken;
+  private String runToken;
+  private long lastCountSnapshot = -1;
 
   @AfterEach
   void cleanupThisRun() {
@@ -68,6 +70,7 @@ class ThroughputLatencyE2EIT extends AbstractE2EIT {
     Duration drainDeadline = full ? Duration.ofMinutes(14) : Duration.ofMinutes(6);
 
     String token = token("thr");
+    runToken = token;
     likeToken = token + "%";
     LoadReport report = new LoadReport(profile);
     report.kv("token", token);
@@ -75,7 +78,10 @@ class ThroughputLatencyE2EIT extends AbstractE2EIT {
     report.kv("burst", "300 msg/s (×3) for " + burstDur.toSeconds() + "s");
 
     assertReadinessUp();
-    double downTripsBefore = PrometheusScrape.fetch().counter("gsa_dest_cluster_down_total");
+    PrometheusScrape base = PrometheusScrape.fetch();
+    double downTripsBefore = base.counter("gsa_dest_cluster_down_total");
+    double skippedReplayBefore =
+        base.counter("gsa_movements_skipped_total", Map.of("reason", "same_day_replay"));
 
     // --- lag sampler (every 5s) --------------------------------------------------------------
     AtomicBoolean sampling = new AtomicBoolean(true);
@@ -151,41 +157,25 @@ class ThroughputLatencyE2EIT extends AbstractE2EIT {
 
       sampling.set(false);
 
-      // --- no loss: every produced id survives (at-least-once towards the topics) --------
-      await("no message lost — anag_user has every produced userId, out+cases >= produced")
+      // --- let the destination + case counts settle (they only grow, then plateau) ---------
+      await("destination + case counts have stabilised")
           .atMost(Duration.ofMinutes(3))
           .pollInterval(Duration.ofSeconds(15))
-          .untilAsserted(
-              () -> {
-                long anagUserRows = distinctAnagUsers(likeToken);
-                long uaOut = countDestByKeyPrefix(E2eEnv.T_USER_ACCOUNT, token);
-                long wmOut = countDestByKeyPrefix(E2eEnv.T_WALLET_MOVEMENT, token);
-                long anagCases = caseCount(likeToken, E2eEnv.T_USER_ACCOUNT_DATA);
-                long movementCases =
-                    caseCount(likeToken, E2eEnv.T_TOPUP)
-                        + caseCount(likeToken, E2eEnv.T_WITHDRAWAL);
-                assertThat(anagUserRows)
-                    .as("anag_user persisted exactly one row per distinct produced user")
-                    .isEqualTo(distinctUsers);
-                assertThat(anagCases).as("valid anagrafica never fails validation").isZero();
-                assertThat(uaOut)
-                    .as("UserAccount out >= produced (at-least-once, no loss)")
-                    .isGreaterThanOrEqualTo(producedUserAccountData);
-                assertThat(wmOut + movementCases)
-                    .as("every movement published or turned into a case record (no loss)")
-                    .isGreaterThanOrEqualTo(producedMovements);
-                assertThat(uaOut + wmOut + anagCases + movementCases)
-                    .as("no message lost")
-                    .isGreaterThanOrEqualTo(producedTotal);
-              });
+          .until(this::countsStable);
 
-      // --- record the numbers -----------------------------------------------------------
+      // --- measure everything and write the report BEFORE any hard assertion -------------
+      long anagUserRows = distinctAnagUsers(likeToken);
       long uaOut = countDestByKeyPrefix(E2eEnv.T_USER_ACCOUNT, token);
       long wmOut = countDestByKeyPrefix(E2eEnv.T_WALLET_MOVEMENT, token);
       long anagCases = caseCount(likeToken, E2eEnv.T_USER_ACCOUNT_DATA);
       long movementCases =
           caseCount(likeToken, E2eEnv.T_TOPUP) + caseCount(likeToken, E2eEnv.T_WITHDRAWAL);
       long totalCases = anagCases + movementCases;
+      long skippedReplay =
+          (long)
+              (PrometheusScrape.fetch()
+                      .counter("gsa_movements_skipped_total", Map.of("reason", "same_day_replay"))
+                  - skippedReplayBefore);
       double dupFactor =
           producedTotal == 0 ? 0.0 : (double) (uaOut + wmOut + totalCases) / (double) producedTotal;
       double downTrips =
@@ -199,9 +189,8 @@ class ThroughputLatencyE2EIT extends AbstractE2EIT {
       report.kv("UserAccount out (key ^" + token + ")", uaOut);
       report.kv("WalletMovement out (key ^" + token + ")", wmOut);
       report.kv("case records (anagrafica / movimenti)", anagCases + " / " + movementCases);
-      report.kv(
-          "distinct anag_user rows",
-          distinctAnagUsers(likeToken) + " (expected " + distinctUsers + ")");
+      report.kv("distinct anag_user rows", anagUserRows + " (expected " + distinctUsers + ")");
+      report.kv("movements skip-republished (same_day_replay, cumulative)", skippedReplay);
       report.kv(
           "delivered / produced (at-least-once factor)",
           String.format(java.util.Locale.ROOT, "%.2fx", dupFactor));
@@ -217,14 +206,44 @@ class ThroughputLatencyE2EIT extends AbstractE2EIT {
             "[e2e][latency] p95=%.3fs > 2s (RNF-02 best-effort, not a failure)%n", latency.p95());
       }
       System.out.printf(
-          "[e2e][throughput] produced=%d uaOut=%d wmOut=%d cases=%d factor=%.2fx e6Trips=%d%n",
-          producedTotal, uaOut, wmOut, totalCases, dupFactor, (long) downTrips);
+          "[e2e][throughput] produced=%d uaOut=%d wmOut=%d cases=%d skips=%d factor=%.2fx"
+              + " e6Trips=%d%n",
+          producedTotal, uaOut, wmOut, totalCases, skippedReplay, dupFactor, (long) downTrips);
+
+      // --- no loss: every produced id survives (at-least-once towards the topics) --------
+      assertThat(anagUserRows)
+          .as("anag_user has exactly one row per distinct produced user")
+          .isEqualTo(distinctUsers);
+      assertThat(anagCases).as("valid anagrafica never fails validation").isZero();
+      assertThat(uaOut)
+          .as("UserAccount out >= produced (at-least-once, no loss)")
+          .isGreaterThanOrEqualTo(producedUserAccountData);
+      assertThat(wmOut + movementCases + skippedReplay)
+          .as(
+              "every produced movement is published, a case record, or an idempotent skip (no loss)")
+          .isGreaterThanOrEqualTo(producedMovements);
+      assertThat(uaOut + wmOut + totalCases + skippedReplay)
+          .as("no message lost")
+          .isGreaterThanOrEqualTo(producedTotal);
     } finally {
       sampling.set(false);
       java.nio.file.Path out = report.flush();
       System.out.println("[e2e] load report written: " + out.toAbsolutePath());
       assertThat(java.nio.file.Files.exists(out)).isTrue();
     }
+  }
+
+  /** True once {@code UserAccount + WalletMovement + case} counts for this run stop growing. */
+  private boolean countsStable() {
+    long now =
+        countDestByKeyPrefix(E2eEnv.T_USER_ACCOUNT, runToken)
+            + countDestByKeyPrefix(E2eEnv.T_WALLET_MOVEMENT, runToken)
+            + caseCount(likeToken, E2eEnv.T_USER_ACCOUNT_DATA)
+            + caseCount(likeToken, E2eEnv.T_TOPUP)
+            + caseCount(likeToken, E2eEnv.T_WITHDRAWAL);
+    boolean stable = now == lastCountSnapshot && now > 0;
+    lastCountSnapshot = now;
+    return stable;
   }
 
   private double consumedTotal() throws Exception {
