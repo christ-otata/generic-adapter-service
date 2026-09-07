@@ -38,4 +38,16 @@ public interface AnagraphicRegistry {
    * already known is never removed by this call, regardless of what it does or does not contain.
    */
   void mergeAccounts(List<AccountEntry> accounts);
+
+  /**
+   * {@code SELECT COUNT(*) FROM anag_user} — backs {@code gsa_registry_size{entity="user"}} (nfr.md
+   * §Observability). O(1)-ish PK count, read live so the gauge is correct after a restart.
+   */
+  long countUsers();
+
+  /**
+   * {@code SELECT COUNT(*) FROM anag_account} — backs {@code gsa_registry_size{entity="account"}}
+   * (nfr.md §Observability). PK count, read live.
+   */
+  long countAccounts();
 }

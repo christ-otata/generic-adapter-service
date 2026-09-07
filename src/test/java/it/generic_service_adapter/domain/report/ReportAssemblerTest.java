@@ -316,6 +316,11 @@ class ReportAssemblerTest {
     }
 
     @Override
+    public long countByState(it.generic_service_adapter.domain.casistica.CaseState state) {
+      return 0L;
+    }
+
+    @Override
     public int markReportedByFile(String reportFileId, LocalDateTime stateChangedAt) {
       return 0;
     }

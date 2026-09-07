@@ -134,6 +134,26 @@ class JdbcAnagraphicRegistryIT {
     assertThat(registry.accountExists("unknown-account")).isFalse();
   }
 
+  @Test
+  void countUsersAndCountAccountsBackTheRegistrySizeGauges() {
+    assertThat(registry.countUsers()).isZero();
+    assertThat(registry.countAccounts()).isZero();
+
+    String u1 = "user-" + UUID.randomUUID();
+    String u2 = "user-" + UUID.randomUUID();
+    LocalDateTime now = LocalDateTime.of(2026, 9, 4, 8, 0, 0);
+    registry.applyUserEvent(new UserRegistryEntry(u1, 1, "ACTIVE", now));
+    registry.applyUserEvent(new UserRegistryEntry(u2, 1, "ACTIVE", now));
+    registry.mergeAccounts(
+        List.of(
+            new AccountEntry("acct-" + UUID.randomUUID(), u1, "ACTIVE", now),
+            new AccountEntry("acct-" + UUID.randomUUID(), u1, "ACTIVE", now),
+            new AccountEntry("acct-" + UUID.randomUUID(), u2, "ACTIVE", now)));
+
+    assertThat(registry.countUsers()).isEqualTo(2L);
+    assertThat(registry.countAccounts()).isEqualTo(3L);
+  }
+
   private static long storedLastVersion(String userId) {
     return jdbcTemplate.queryForObject(
         "SELECT last_version FROM anag_user WHERE user_id = :userId",

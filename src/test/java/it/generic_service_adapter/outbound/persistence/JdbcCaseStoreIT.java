@@ -122,6 +122,29 @@ class JdbcCaseStoreIT {
   }
 
   @Test
+  void countByStateBacksTheGsaCasesByStateGauges() {
+    LocalDateTime base = LocalDateTime.of(2026, 9, 4, 10, 0, 0);
+    store.create(newPendingCase(UUID.randomUUID().toString(), base));
+    store.create(newPendingCase(UUID.randomUUID().toString(), base.plusMinutes(1)));
+    store.create(
+        newCase(
+            UUID.randomUUID().toString(),
+            base.plusMinutes(2),
+            CaseState.IN_REPORT,
+            UUID.randomUUID().toString()));
+    store.create(
+        newCase(
+            UUID.randomUUID().toString(),
+            base.plusMinutes(3),
+            CaseState.REPORTED,
+            UUID.randomUUID().toString()));
+
+    assertThat(store.countByState(CaseState.PENDING_REPORT)).isEqualTo(2L);
+    assertThat(store.countByState(CaseState.IN_REPORT)).isEqualTo(1L);
+    assertThat(store.countByState(CaseState.REPORTED)).isEqualTo(1L);
+  }
+
+  @Test
   void markReportedByFileOnlyMovesInReportRowsOfThatFileAndReturnsTheCount() {
     LocalDateTime base = LocalDateTime.of(2026, 9, 4, 10, 0, 0);
     String fileA = UUID.randomUUID().toString();

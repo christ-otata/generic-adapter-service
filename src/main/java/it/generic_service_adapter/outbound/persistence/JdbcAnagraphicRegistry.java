@@ -98,6 +98,22 @@ public class JdbcAnagraphicRegistry implements AnagraphicRegistry {
   }
 
   @Override
+  public long countUsers() {
+    Long count =
+        jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM anag_user", new MapSqlParameterSource(), Long.class);
+    return count == null ? 0L : count;
+  }
+
+  @Override
+  public long countAccounts() {
+    Long count =
+        jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM anag_account", new MapSqlParameterSource(), Long.class);
+    return count == null ? 0L : count;
+  }
+
+  @Override
   public void mergeAccounts(List<AccountEntry> accounts) {
     if (accounts.isEmpty()) {
       return;

@@ -2,6 +2,7 @@ package it.generic_service_adapter.outbound.kafka;
 
 import com.google.protobuf.Message;
 import com.google.type.Date;
+import it.generic_service_adapter.config.observability.DestinationPublishMetrics;
 import it.generic_service_adapter.config.properties.KafkaDestinationProperties;
 import it.generic_service_adapter.contract.v1.Direction;
 import it.generic_service_adapter.contract.v1.Money;
@@ -43,11 +44,16 @@ public class KafkaMovementPublisher implements MovementPublisher {
 
   private final KafkaTemplate<String, Message> destinationKafkaTemplate;
   private final KafkaDestinationProperties kafkaDestinationProperties;
+  private final DestinationPublishMetrics destinationPublishMetrics;
 
   @Override
   public PublishResult publish(WalletMovementRecord movement) {
     String topic = kafkaDestinationProperties.topics().walletMovement();
     WalletMovement message = toProto(movement);
+    return destinationPublishMetrics.timedPublish(topic, () -> send(topic, movement, message));
+  }
+
+  private PublishResult send(String topic, WalletMovementRecord movement, WalletMovement message) {
     try {
       SendResult<String, Message> sendResult =
           destinationKafkaTemplate.send(topic, movement.accountId(), message).get();

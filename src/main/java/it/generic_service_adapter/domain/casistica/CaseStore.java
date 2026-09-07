@@ -31,6 +31,14 @@ public interface CaseStore {
   long countPendingReport();
 
   /**
+   * {@code SELECT COUNT(*) FROM case_record WHERE case_state = :state} — backs one {@code
+   * gsa_cases_by_state{case_state}} gauge per {@link CaseState} (nfr.md §Observability). Live query
+   * over {@code idx_case_pending}'s leading {@code case_state} column, so the gauge is accurate
+   * between report ticks and after a restart.
+   */
+  long countByState(CaseState state);
+
+  /**
    * Guarded bulk transition {@code IN_REPORT -> REPORTED} for every case record linked to {@code
    * reportFileId} (uses {@code idx_case_file}). Called only after the Vault has answered {@code
    * 2xx} for that {@code report_file} (RF-21); rows already {@code REPORTED} or still {@code

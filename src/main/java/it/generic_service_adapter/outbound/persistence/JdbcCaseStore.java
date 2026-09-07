@@ -58,6 +58,9 @@ public class JdbcCaseStore implements CaseStore {
   private static final String COUNT_PENDING_REPORT =
       "SELECT COUNT(*) FROM case_record WHERE case_state = 'PENDING_REPORT'";
 
+  private static final String COUNT_BY_STATE =
+      "SELECT COUNT(*) FROM case_record WHERE case_state = :state";
+
   // idx_case_file (report_file_id): guarded bulk IN_REPORT -> REPORTED after a 2xx from the Vault.
   private static final String MARK_REPORTED_BY_FILE =
       """
@@ -124,6 +127,14 @@ public class JdbcCaseStore implements CaseStore {
   public long countPendingReport() {
     Long count =
         jdbcTemplate.queryForObject(COUNT_PENDING_REPORT, new MapSqlParameterSource(), Long.class);
+    return count == null ? 0L : count;
+  }
+
+  @Override
+  public long countByState(CaseState state) {
+    Long count =
+        jdbcTemplate.queryForObject(
+            COUNT_BY_STATE, new MapSqlParameterSource("state", state.name()), Long.class);
     return count == null ? 0L : count;
   }
 

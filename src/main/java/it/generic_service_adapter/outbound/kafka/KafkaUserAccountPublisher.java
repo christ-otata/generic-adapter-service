@@ -1,6 +1,7 @@
 package it.generic_service_adapter.outbound.kafka;
 
 import com.google.protobuf.Message;
+import it.generic_service_adapter.config.observability.DestinationPublishMetrics;
 import it.generic_service_adapter.config.properties.KafkaDestinationProperties;
 import it.generic_service_adapter.contract.v1.Account;
 import it.generic_service_adapter.contract.v1.AccountStatus;
@@ -41,11 +42,16 @@ public class KafkaUserAccountPublisher implements UserAccountPublisher {
 
   private final KafkaTemplate<String, Message> destinationKafkaTemplate;
   private final KafkaDestinationProperties kafkaDestinationProperties;
+  private final DestinationPublishMetrics destinationPublishMetrics;
 
   @Override
   public PublishResult publish(UserAccountRecord userAccount) {
     String topic = kafkaDestinationProperties.topics().userAccount();
     UserAccount message = toProto(userAccount);
+    return destinationPublishMetrics.timedPublish(topic, () -> send(topic, userAccount, message));
+  }
+
+  private PublishResult send(String topic, UserAccountRecord userAccount, UserAccount message) {
     try {
       SendResult<String, Message> sendResult =
           destinationKafkaTemplate.send(topic, userAccount.userId(), message).get();

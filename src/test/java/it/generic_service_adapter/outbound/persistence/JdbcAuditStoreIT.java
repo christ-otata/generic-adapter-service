@@ -3,6 +3,7 @@ package it.generic_service_adapter.outbound.persistence;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import it.generic_service_adapter.domain.publish.AuditOutcome;
 import it.generic_service_adapter.domain.publish.AuditRecord;
 import it.generic_service_adapter.domain.publish.MessageType;
@@ -29,6 +30,7 @@ class JdbcAuditStoreIT {
       new MySQLContainer(DockerImageName.parse("mysql:8.0.46")).withDatabaseName("gsa");
 
   private static NamedParameterJdbcTemplate jdbcTemplate;
+  private static SimpleMeterRegistry meterRegistry;
   private static JdbcAuditStore store;
 
   @BeforeAll
@@ -36,7 +38,8 @@ class JdbcAuditStoreIT {
     MYSQL.start();
     PersistenceTestDatabases.migrate(MYSQL);
     jdbcTemplate = new NamedParameterJdbcTemplate(PersistenceTestDatabases.dataSource(MYSQL));
-    store = new JdbcAuditStore(jdbcTemplate);
+    meterRegistry = new SimpleMeterRegistry();
+    store = new JdbcAuditStore(jdbcTemplate, meterRegistry);
   }
 
   @AfterAll
@@ -47,6 +50,7 @@ class JdbcAuditStoreIT {
   @BeforeEach
   void cleanTable() {
     jdbcTemplate.update("DELETE FROM audit", new MapSqlParameterSource());
+    meterRegistry.clear();
   }
 
   private static AuditRecord walletMovement(LocalDateTime publishedAt, String transactionId) {
@@ -145,6 +149,22 @@ class JdbcAuditStoreIT {
         walletMovement(LocalDateTime.now(java.time.ZoneOffset.UTC).minusDays(2), transactionId));
 
     assertThat(store.movementAlreadyRecordedToday(transactionId)).isFalse();
+  }
+
+  @Test
+  void gsaAuditRowsWrittenTotalCountsInsertsButNotSkipRepublishDuplicates() {
+    String txnA = "txn-" + UUID.randomUUID();
+    String txnB = "txn-" + UUID.randomUUID();
+    LocalDateTime morning = LocalDateTime.of(2026, 9, 4, 8, 0, 0);
+    LocalDateTime evening = LocalDateTime.of(2026, 9, 4, 22, 0, 0);
+
+    store.record(walletMovement(morning, txnA));
+    store.record(userAccount(morning, "user-" + UUID.randomUUID(), 1L));
+    store.record(walletMovement(evening, txnA)); // DUPLICATE — must NOT bump the counter
+    store.record(walletMovement(morning, txnB));
+
+    assertThat(meterRegistry.get(JdbcAuditStore.AUDIT_ROWS_METRIC).counter().count())
+        .isEqualTo(3.0);
   }
 
   private static int countRows(String transactionId) {

@@ -393,6 +393,16 @@ class OrphanReprocessorTest {
     public void mergeAccounts(List<AccountEntry> accountsList) {
       // no-op
     }
+
+    @Override
+    public long countUsers() {
+      return users.size();
+    }
+
+    @Override
+    public long countAccounts() {
+      return accounts.size();
+    }
   }
 
   private static final class FakeAuditStore implements AuditStore {
@@ -444,6 +454,11 @@ class OrphanReprocessorTest {
     @Override
     public long countPendingReport() {
       return 0L;
+    }
+
+    @Override
+    public long countByState(CaseState state) {
+      return records.stream().filter(c -> c.caseState() == state).count();
     }
 
     @Override

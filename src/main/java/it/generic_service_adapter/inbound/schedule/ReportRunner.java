@@ -210,9 +210,10 @@ public class ReportRunner {
           oldestAge,
           alertThresholdProperties.oldestUnsentReportAgeThreshold());
     }
-    // WP8: gsa_report_files_pending / gsa_report_oldest_pending_seconds gauges bind here
-    // (nfr.md §6.3 observability sweep) — off reportFileStore.countUnsent() /
-    // oldestUnsentCreatedAt(); not implemented in WP7.
+    // gsa_report_files_pending / gsa_report_oldest_pending_seconds are NOT bound here: a gauge must
+    // be a live read on every scrape, not a value pushed once per tick. WP8 binds them off the same
+    // reportFileStore.countUnsent() / oldestUnsentCreatedAt() in config/observability/
+    // ReportBacklogMetrics.
   }
 
   private void purgeDueReports() {

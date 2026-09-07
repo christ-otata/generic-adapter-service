@@ -20,6 +20,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.ContainerProperties.AckMode;
+import org.springframework.kafka.listener.RecordInterceptor;
 import org.springframework.util.StringUtils;
 
 /**
@@ -68,6 +69,7 @@ public class RetryKafkaConfig {
       ConsumerFactory<String, byte[]> sourceConsumerFactory,
       @Qualifier(ListenerErrorHandlingConfig.NEVER_RECOVER_ERROR_HANDLER)
           CommonErrorHandler neverRecoverErrorHandler,
+      RecordInterceptor<String, byte[]> gsaInboundRecordInterceptor,
       RetryProperties retryProperties) {
     ConcurrentKafkaListenerContainerFactory<String, byte[]> factory =
         new ConcurrentKafkaListenerContainerFactory<>();
@@ -76,6 +78,9 @@ public class RetryKafkaConfig {
     factory.setConcurrency(retryProperties.concurrency());
     factory.getContainerProperties().setAckMode(AckMode.MANUAL_IMMEDIATE);
     factory.setCommonErrorHandler(neverRecoverErrorHandler);
+    // WP8: same gsa_messages_consumed_total{topic} interceptor as the source path (topic tag
+    // carries the *.retry.<n> name, so retry traffic is visible too).
+    factory.setRecordInterceptor(gsaInboundRecordInterceptor);
     return factory;
   }
 

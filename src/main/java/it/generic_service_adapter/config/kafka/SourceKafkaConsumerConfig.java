@@ -17,6 +17,7 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.ContainerProperties.AckMode;
+import org.springframework.kafka.listener.RecordInterceptor;
 import org.springframework.util.StringUtils;
 
 /**
@@ -60,7 +61,8 @@ public class SourceKafkaConsumerConfig {
       sourceKafkaListenerContainerFactory(
           ConsumerFactory<String, byte[]> sourceConsumerFactory,
           @Qualifier(ListenerErrorHandlingConfig.NEVER_RECOVER_ERROR_HANDLER)
-              CommonErrorHandler neverRecoverErrorHandler) {
+              CommonErrorHandler neverRecoverErrorHandler,
+          RecordInterceptor<String, byte[]> gsaInboundRecordInterceptor) {
     ConcurrentKafkaListenerContainerFactory<String, byte[]> factory =
         new ConcurrentKafkaListenerContainerFactory<>();
     factory.setConsumerFactory(sourceConsumerFactory);
@@ -70,6 +72,9 @@ public class SourceKafkaConsumerConfig {
     // ADR 0008: an exception that escapes a processor must never advance the offset — retry
     // forever, never "recover" and skip (WP6, ListenerErrorHandlingConfig).
     factory.setCommonErrorHandler(neverRecoverErrorHandler);
+    // WP8: gsa_messages_consumed_total{topic} + gsa_backlog_age_seconds{topic}, before the
+    // listener.
+    factory.setRecordInterceptor(gsaInboundRecordInterceptor);
     return factory;
   }
 

@@ -1,5 +1,6 @@
 package it.generic_service_adapter.outbound.persistence;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import it.generic_service_adapter.domain.publish.AuditOutcome;
 import it.generic_service_adapter.domain.publish.AuditRecord;
 import it.generic_service_adapter.domain.publish.AuditStore;
@@ -26,6 +27,8 @@ import org.springframework.stereotype.Repository;
 @Slf4j
 public class JdbcAuditStore implements AuditStore {
 
+  static final String AUDIT_ROWS_METRIC = "gsa_audit_rows_written_total";
+
   private static final String DEDUP_CONSTRAINT_NAME = "uq_audit_txn_dedup";
 
   private static final String INSERT =
@@ -50,6 +53,7 @@ public class JdbcAuditStore implements AuditStore {
       """;
 
   private final NamedParameterJdbcTemplate jdbcTemplate;
+  private final MeterRegistry meterRegistry;
 
   @Override
   public boolean movementAlreadyRecordedToday(String transactionId) {
@@ -77,6 +81,7 @@ public class JdbcAuditStore implements AuditStore {
             .addValue("userVersion", auditRecord.userVersion());
     try {
       jdbcTemplate.update(INSERT, params);
+      meterRegistry.counter(AUDIT_ROWS_METRIC).increment();
       return AuditOutcome.RECORDED;
     } catch (DuplicateKeyException e) {
       if (isDedupConstraintViolation(e)) {
