@@ -8,6 +8,16 @@
 spring:
   application:
     name: generic-service-adapter
+  task:
+    scheduling:
+      # WP8 adds PartitionMaintenanceRunner, ConsumerLagMetrics and AlertEvaluator
+      # to the existing ReportRunner + OrphanReprocessor @Scheduled methods. The
+      # default single-thread scheduler would serialise them, so a slow tick (a
+      # 15-min report assembly, a partition ALTER) could starve the ~10s
+      # consumer-lag refresh and the alert evaluation. One thread per scheduled
+      # concern plus a little headroom.
+      pool:
+        size: 6
   lifecycle:
     # RNF-10 / ADR 0018: cap on how long each SmartLifecycle shutdown phase may take
     # to drain. The Kafka listener containers (KafkaListenerEndpointRegistry, phase

@@ -272,7 +272,9 @@ class ReportRunnerIT {
   }
 
   private void acquireRunnerLock(Connection connection) throws Exception {
-    try (PreparedStatement ps = connection.prepareStatement("SELECT GET_LOCK(?, 0)")) {
+    // Wait up to 5s: the app's own @Scheduled ReportRunner tick may momentarily hold this lock
+    // (e.g. its startup tick) when this test's "another replica holds the lock" setup runs.
+    try (PreparedStatement ps = connection.prepareStatement("SELECT GET_LOCK(?, 5)")) {
       ps.setString(1, dataSourceProperties.reportRunnerLockName());
       try (ResultSet rs = ps.executeQuery()) {
         assertThat(rs.next()).isTrue();
