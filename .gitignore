@@ -38,3 +38,6 @@ build/
 ### Local dev runtime data ###
 # XML report spool bind mount (gsa.report.xml-spool-directory, dev profile)
 /data/
+
+# WP9 e2e: keep the run summary + load report, not the multi-MB raw compose log
+docs/e2e/report/*-compose.log

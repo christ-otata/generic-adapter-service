@@ -1,0 +1,32 @@
+WP9 e2e run 20260907-090657 — load profile: ci
+mvn exit code: 1
+
+=== Failsafe summary (target/failsafe-reports/*.txt) ===
+  target/failsafe-reports/it.generic_service_adapter.e2e.ChaosDestinationDownE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 158.1 s -- in it.generic_service_adapter.e2e.ChaosDestinationDownE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ChaosMysqlDownE2EIT.txt:Tests run: 1, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 91.08 s <<< FAILURE! -- in it.generic_service_adapter.e2e.ChaosMysqlDownE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ChaosMysqlDownE2EIT.txt:it.generic_service_adapter.e2e.ChaosMysqlDownE2EIT.mysqlDownDoesNotLoseMessagesAndRecoveryDrainsThem -- Time elapsed: 57.52 s <<< ERROR!
+  target/failsafe-reports/it.generic_service_adapter.e2e.ChaosVaultDownE2EIT.txt:Tests run: 1, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 253.6 s <<< FAILURE! -- in it.generic_service_adapter.e2e.ChaosVaultDownE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ChaosVaultDownE2EIT.txt:it.generic_service_adapter.e2e.ChaosVaultDownE2EIT.vaultDownKeepsReportQueuedAndCasesInReport_thenRecoveryDrainsIt -- Time elapsed: 250.5 s <<< ERROR!
+  target/failsafe-reports/it.generic_service_adapter.e2e.GracefulRestartE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 65.45 s -- in it.generic_service_adapter.e2e.GracefulRestartE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.IdempotencyE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 29.87 s -- in it.generic_service_adapter.e2e.IdempotencyE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.MovementHappyPathE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 18.61 s -- in it.generic_service_adapter.e2e.MovementHappyPathE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.OrderingE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 18.44 s -- in it.generic_service_adapter.e2e.OrderingE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.OrphanMovementE2EIT.txt:Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 100.6 s -- in it.generic_service_adapter.e2e.OrphanMovementE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.RegistryHappyPathE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 22.98 s -- in it.generic_service_adapter.e2e.RegistryHappyPathE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ReportXmlE2EIT.txt:Tests run: 1, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 114.7 s <<< FAILURE! -- in it.generic_service_adapter.e2e.ReportXmlE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ReportXmlE2EIT.txt:it.generic_service_adapter.e2e.ReportXmlE2EIT.accumulatedCasesAreReportedToTheVaultThenMarkedReportedAndNotResent -- Time elapsed: 111.5 s <<< ERROR!
+  target/failsafe-reports/it.generic_service_adapter.e2e.StackWiringE2EIT.txt:Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 14.57 s -- in it.generic_service_adapter.e2e.StackWiringE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ThroughputLatencyE2EIT.txt:Tests run: 1, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 1066 s <<< FAILURE! -- in it.generic_service_adapter.e2e.ThroughputLatencyE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ThroughputLatencyE2EIT.txt:it.generic_service_adapter.e2e.ThroughputLatencyE2EIT.sustainedLoadPlusBurst_noLoss_lagRecovers_latencyReported -- Time elapsed: 824.3 s <<< ERROR!
+  target/failsafe-reports/it.generic_service_adapter.e2e.ValidationE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 37.64 s -- in it.generic_service_adapter.e2e.ValidationE2EIT
+
+=== failsafe-summary.xml ===
+<?xml version="1.0" encoding="UTF-8"?>
+<failsafe-summary xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/failsafe-summary.xsd" result="255" timeout="false">
+    <completed>17</completed>
+    <errors>4</errors>
+    <failures>0</failures>
+    <skipped>0</skipped>
+    <flakes>0</flakes>
+    <failureMessage xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>
+</failsafe-summary>

@@ -97,7 +97,14 @@ These are **test-harness knobs, not deployment settings** (relaxed-binding of
 | Env var | Property | Why |
 |---|---|---|
 | `GSA_REPORT_PENDINGREPORTTHRESHOLD=5` | `gsa.report.pending-report-threshold` | so the report runner's early trigger (RF-33) fires on a handful of seeded cases instead of 500 — no 15-min wait. |
+| `GSA_REPORT_SCHEDULEINTERVAL=30s` | `gsa.report.schedule-interval` | so the durable-queue retry + backlog alert tick every 30s instead of every 15 min (the RF-33 count trigger stops firing once the cases are `IN_REPORT`). |
 | `GSA_ALERTTHRESHOLDS_OLDESTUNSENTREPORTAGETHRESHOLD=15s` | `gsa.alert-thresholds.oldest-unsent-report-age-threshold` | so `ChaosVaultDownE2EIT` can observe the backlog-age alert without a 2-min wait. |
+
+`ThroughputLatencyE2EIT` asserts **no loss / at-least-once**, not exactly-once:
+`UserAccount` carries no dedup (ASS-3, ADR 0009), so a back-pressure resume
+republishes it (`out >= produced`, `anag_user` has one row per distinct produced
+user). The duplication factor, the latency percentiles and the lag series are
+reported to `docs/e2e/report/load-*.md`, not asserted.
 
 ## Runtime
 

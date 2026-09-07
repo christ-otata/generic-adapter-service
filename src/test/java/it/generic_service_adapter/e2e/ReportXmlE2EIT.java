@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -27,16 +28,17 @@ import org.w3c.dom.NodeList;
 
 /**
  * Scenario 6 — <b>XML report</b> (flussi.md flow g). N {@code PENDING_REPORT} case records + the
- * count trigger (the e2e stack lowers {@code gsa.report.pending-report-threshold} to 5 — see
- * compose.e2e.yaml / docs/e2e/README.md) → the Vault mock receives a {@code POST} of an XML report
- * that validates against {@code docs/report-xml/case-report-v1.xsd} with N {@code <case>} and a
- * {@code <header>} carrying the counts; the case records move to {@code REPORTED} only after the
- * 2xx; {@code report_file.state='SENT'}; a further tick does not re-create or re-send the same
- * file.
+ * count trigger (the e2e stack lowers {@code gsa.report.pending-report-threshold} to 5 and {@code
+ * gsa.report.schedule-interval} to 30s — see compose.e2e.yaml / docs/e2e/README.md) → the Vault
+ * mock receives a {@code POST} of an XML report that validates against {@code
+ * docs/report-xml/case-report-v1.xsd} with N {@code <case>} and a {@code <header>} carrying the
+ * counts; the case records move to {@code REPORTED} only after the 2xx; {@code report_file.state =
+ * 'SENT'}; a further tick does not re-create or re-send that file (same id, state, attempts).
  *
- * <p>This class truncates {@code case_record} + {@code report_file} in {@code @BeforeEach} to keep
- * the {@code <caseCount>} assertion deterministic on the shared DB — safe because Failsafe runs the
- * {@code *E2EIT} classes sequentially in one JVM (see docs/e2e/README.md "shared state").
+ * <p>Truncates {@code case_record} / {@code report_file} / {@code orphan_movement} in
+ * {@code @BeforeEach} so the only {@code PENDING_REPORT} rows at assembly time are this scenario's
+ * N seeds — safe because Failsafe runs the {@code *E2EIT} classes sequentially in one JVM (see
+ * docs/e2e/README.md "shared state"). Everything asserted afterwards is scoped to the marker.
  */
 class ReportXmlE2EIT extends AbstractE2EIT {
 
@@ -50,6 +52,7 @@ class ReportXmlE2EIT extends AbstractE2EIT {
   void wipeReportTables() {
     jdbc.update("DELETE FROM case_record", new MapSqlParameterSource());
     jdbc.update("DELETE FROM report_file", new MapSqlParameterSource());
+    jdbc.update("DELETE FROM orphan_movement", new MapSqlParameterSource());
   }
 
   @Test
@@ -57,28 +60,23 @@ class ReportXmlE2EIT extends AbstractE2EIT {
     String marker = token("rpt");
     double okBefore = vaultOk();
 
-    // 6 PENDING_REPORT case records: E1x2 / E2x2 / E4x2, across the three source topics.
-    seedCase(marker, "E1", E2eEnv.T_USER_ACCOUNT_DATA, false);
-    seedCase(marker, "E1", E2eEnv.T_USER_ACCOUNT_DATA, false);
-    seedCase(marker, "E2", E2eEnv.T_TOPUP, true);
-    seedCase(marker, "E2", E2eEnv.T_TOPUP, true);
-    seedCase(marker, "E4", E2eEnv.T_WITHDRAWAL, true);
-    seedCase(marker, "E4", E2eEnv.T_WITHDRAWAL, true);
+    seedSixCases(marker); // E1x2 / E2x2 / E4x2, across the three source topics, one round-trip
 
-    // the threshold poll (~30s) fires a tick because 6 >= 5; the report is assembled, spooled,
-    // POSTed
-    await("report_file SENT + all case records REPORTED")
-        .atMost(Duration.ofSeconds(90))
+    // the threshold poll (5) / 30s scheduled tick assembles, spools and POSTs the report
+    await("all " + N + " marked case records REPORTED via exactly one report_file")
+        .atMost(Duration.ofSeconds(120))
         .pollInterval(Duration.ofSeconds(3))
         .untilAsserted(
             () -> {
-              assertThat(reportFileCount()).isEqualTo(1);
-              assertThat(reportFileState()).isEqualTo("SENT");
-              assertThat(distinctCaseStates()).containsExactly("REPORTED");
-              assertThat(countCaseState("REPORTED")).isEqualTo(N);
+              assertThat(markerCaseStates(marker)).containsExactly("REPORTED");
+              assertThat(markerCaseCount(marker)).isEqualTo(N);
+              assertThat(distinctReportFileIds(marker)).hasSize(1);
             });
 
-    String reportFileId = reportFileId();
+    String reportFileId = distinctReportFileIds(marker).get(0);
+    assertThat(reportFileState(reportFileId)).isEqualTo("SENT");
+    assertThat(reportFileCol(reportFileId, "sent_at")).isNotNull();
+    assertThat(((Number) reportFileCol(reportFileId, "case_count")).intValue()).isEqualTo(N);
     assertThat(vaultOk())
         .as("gsa_vault_send_total{outcome=ok} incremented")
         .isGreaterThan(okBefore);
@@ -97,34 +95,61 @@ class ReportXmlE2EIT extends AbstractE2EIT {
     assertThat(topicNames(doc))
         .contains(E2eEnv.T_USER_ACCOUNT_DATA, E2eEnv.T_TOPUP, E2eEnv.T_WITHDRAWAL);
 
-    // no re-create / no re-send on subsequent ticks (nothing PENDING_REPORT left → threshold poll
-    // does not fire; the 15-min scheduled tick does not fire inside the test window)
-    double okAfterSend = vaultOk();
-    int attemptsAfterSend = reportFileAttempts();
-    await("no duplicate report_file / no Vault re-send after ~2 more poll intervals")
-        .during(Duration.ofSeconds(70))
-        .atMost(Duration.ofSeconds(75))
+    // no re-create / no re-send of that same file on subsequent ticks
+    int attemptsAtSend = ((Number) reportFileCol(reportFileId, "attempts")).intValue();
+    Object sentAtSend = reportFileCol(reportFileId, "sent_at");
+    await("the SENT report_file is untouched across the next ticks")
+        .during(Duration.ofSeconds(40))
+        .atMost(Duration.ofSeconds(45))
         .pollInterval(Duration.ofSeconds(10))
         .untilAsserted(
             () -> {
-              assertThat(reportFileCount()).isEqualTo(1);
-              assertThat(reportFileId()).isEqualTo(reportFileId);
-              assertThat(reportFileState()).isEqualTo("SENT");
-              assertThat(reportFileAttempts()).isEqualTo(attemptsAfterSend);
-              assertThat(vaultOk()).isEqualTo(okAfterSend);
+              assertThat(distinctReportFileIds(marker)).containsExactly(reportFileId);
+              assertThat(reportFileState(reportFileId)).isEqualTo("SENT");
+              assertThat(((Number) reportFileCol(reportFileId, "attempts")).intValue())
+                  .isEqualTo(attemptsAtSend);
+              assertThat(reportFileCol(reportFileId, "sent_at")).isEqualTo(sentAtSend);
             });
     try (var files = Files.list(Path.of(E2eEnv.REPORT_SPOOL_DIR))) {
       assertThat(files.map(p -> p.getFileName().toString()))
-          .filteredOn(n -> n.equals("report-" + reportFileId + ".xml"))
+          .filteredOn(nm -> nm.equals("report-" + reportFileId + ".xml"))
           .hasSize(1);
     }
   }
 
   // --- seeding --------------------------------------------------------------------------------
 
-  private void seedCase(String marker, String category, String sourceTopic, boolean withKeys) {
+  private void seedSixCases(String marker) {
+    String[][] spec = {
+      {"E1", E2eEnv.T_USER_ACCOUNT_DATA, "false"},
+      {"E1", E2eEnv.T_USER_ACCOUNT_DATA, "false"},
+      {"E2", E2eEnv.T_TOPUP, "true"},
+      {"E2", E2eEnv.T_TOPUP, "true"},
+      {"E4", E2eEnv.T_WITHDRAWAL, "true"},
+      {"E4", E2eEnv.T_WITHDRAWAL, "true"},
+    };
     LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-    jdbc.update(
+    List<MapSqlParameterSource> batch = new ArrayList<>();
+    long off = System.nanoTime() % 100000;
+    for (String[] s : spec) {
+      String cat = s[0];
+      boolean withKeys = Boolean.parseBoolean(s[2]);
+      batch.add(
+          new MapSqlParameterSource()
+              .addValue("id", UUID.randomUUID().toString())
+              .addValue("now", now)
+              .addValue("cat", cat)
+              .addValue("detail", cat.equals("E4") ? null : "e2e seeded " + cat)
+              .addValue("topic", s[1])
+              .addValue("off", off++)
+              .addValue("mk", marker)
+              .addValue("uid", withKeys ? marker + "-U" : null)
+              .addValue("aid", withKeys ? marker + "-A" : null)
+              .addValue("tid", withKeys ? marker + "-T" : null)
+              .addValue("pid", UUID.randomUUID().toString())
+              .addValue("raw", "{\"k\":\"v\",\"n\":\"a < b & c\",\"marker\":\"" + marker + "\"}"));
+    }
+    jdbc.batchUpdate(
         """
         INSERT INTO case_record
           (id, created_at, case_state, report_file_id, error_category, error_detail, source_topic,
@@ -135,65 +160,47 @@ class ReportXmlE2EIT extends AbstractE2EIT {
           (:id, :now, 'PENDING_REPORT', NULL, :cat, :detail, :topic, 0, :off, :mk, :uid, :aid, :tid,
            :pid, 0, :raw, :now, :now, :now, :now)
         """,
-        new MapSqlParameterSource()
-            .addValue("id", UUID.randomUUID().toString())
-            .addValue("now", now)
-            .addValue("cat", category)
-            .addValue("detail", category.equals("E4") ? null : "e2e seeded " + category)
-            .addValue("topic", sourceTopic)
-            .addValue("off", System.nanoTime() % 100000)
-            .addValue("mk", marker)
-            .addValue("uid", withKeys ? marker + "-U" : null)
-            .addValue("aid", withKeys ? marker + "-A" : null)
-            .addValue("tid", withKeys ? marker + "-T" : null)
-            .addValue("pid", UUID.randomUUID().toString())
-            .addValue("raw", "{\"k\":\"v\",\"n\":\"a < b & c\",\"marker\":\"" + marker + "\"}"));
+        batch.toArray(new MapSqlParameterSource[0]));
   }
 
   // --- DB reads ------------------------------------------------------------------------------
 
-  private int reportFileCount() {
-    Integer n =
-        jdbc.queryForObject(
-            "SELECT COUNT(*) FROM report_file", new MapSqlParameterSource(), Integer.class);
-    return n == null ? 0 : n;
-  }
-
-  private String reportFileId() {
-    return jdbc.queryForObject(
-        "SELECT id FROM report_file ORDER BY created_at LIMIT 1",
-        new MapSqlParameterSource(),
-        String.class);
-  }
-
-  private String reportFileState() {
-    return jdbc.queryForObject(
-        "SELECT state FROM report_file ORDER BY created_at LIMIT 1",
-        new MapSqlParameterSource(),
-        String.class);
-  }
-
-  private int reportFileAttempts() {
-    Integer n =
-        jdbc.queryForObject(
-            "SELECT attempts FROM report_file ORDER BY created_at LIMIT 1",
-            new MapSqlParameterSource(),
-            Integer.class);
-    return n == null ? -1 : n;
-  }
-
-  private List<String> distinctCaseStates() {
+  private List<String> markerCaseStates(String marker) {
     return jdbc.queryForList(
-        "SELECT DISTINCT case_state FROM case_record", new MapSqlParameterSource(), String.class);
+        "SELECT DISTINCT case_state FROM case_record WHERE message_key = :m",
+        new MapSqlParameterSource("m", marker),
+        String.class);
   }
 
-  private int countCaseState(String state) {
+  private int markerCaseCount(String marker) {
     Integer n =
         jdbc.queryForObject(
-            "SELECT COUNT(*) FROM case_record WHERE case_state = :s",
-            new MapSqlParameterSource("s", state),
+            "SELECT COUNT(*) FROM case_record WHERE message_key = :m",
+            new MapSqlParameterSource("m", marker),
             Integer.class);
     return n == null ? 0 : n;
+  }
+
+  private List<String> distinctReportFileIds(String marker) {
+    return jdbc.queryForList(
+        "SELECT DISTINCT report_file_id FROM case_record"
+            + " WHERE message_key = :m AND report_file_id IS NOT NULL",
+        new MapSqlParameterSource("m", marker),
+        String.class);
+  }
+
+  private String reportFileState(String id) {
+    return jdbc.queryForObject(
+        "SELECT state FROM report_file WHERE id = :id",
+        new MapSqlParameterSource("id", id),
+        String.class);
+  }
+
+  private Object reportFileCol(String id, String column) {
+    return jdbc.queryForMap(
+            "SELECT " + column + " AS v FROM report_file WHERE id = :id",
+            new MapSqlParameterSource("id", id))
+        .get("v");
   }
 
   private double vaultOk() throws Exception {

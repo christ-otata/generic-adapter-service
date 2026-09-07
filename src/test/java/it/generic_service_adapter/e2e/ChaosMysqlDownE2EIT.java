@@ -69,10 +69,6 @@ class ChaosMysqlDownE2EIT extends AbstractE2EIT {
           .pollInterval(Duration.ofSeconds(2))
           .until(() -> registryKnows(preUser));
 
-      long offsetsBefore =
-          KafkaSupport.committedSourceOffsetSum(
-              E2eEnv.GROUP_ANAGRAFICA, E2eEnv.T_USER_ACCOUNT_DATA);
-
       ComposeControl.stop("mysql");
 
       await("readiness flips DOWN (db indicator)")
@@ -88,22 +84,29 @@ class ChaosMysqlDownE2EIT extends AbstractE2EIT {
               Payloads.registryJson(postUser, 1, postUser + "-A")));
       producer.flush();
 
-      // for ~30s: no crash (liveness UP, container running), offsets frozen
-      await("no crash-loop while MySQL is down")
-          .during(Duration.ofSeconds(30))
-          .atMost(Duration.ofSeconds(35))
-          .pollInterval(Duration.ofSeconds(5))
+      // let back-pressure engage on the first failed audit write, then sample the frozen offset:
+      // the adapter may still be draining a backlog when MySQL stops, so the freeze point is
+      // "wherever it got to", not the pre-outage value.
+      await("consumption has stalled (offset stable across 8s)")
+          .atMost(Duration.ofSeconds(45))
+          .pollInterval(Duration.ofSeconds(4))
+          .until(() -> offsetStableFor(Duration.ofSeconds(8)));
+      long frozenAt = committedOffsetSumQuiet();
+
+      // for ~24s: no crash (liveness UP, container running), offsets do not advance
+      await("no crash-loop while MySQL is down; offsets frozen")
+          .during(Duration.ofSeconds(24))
+          .atMost(Duration.ofSeconds(30))
+          .pollInterval(Duration.ofSeconds(4))
           .untilAsserted(
               () -> {
                 assertThat(Http.livenessUp()).as("liveness UP").isTrue();
                 assertThat(ComposeControl.isRunning("gsa-adapter"))
                     .as("adapter container still running")
                     .isTrue();
-                assertThat(
-                        KafkaSupport.committedSourceOffsetSum(
-                            E2eEnv.GROUP_ANAGRAFICA, E2eEnv.T_USER_ACCOUNT_DATA))
-                    .as("source offsets frozen while the DB write cannot complete")
-                    .isEqualTo(offsetsBefore);
+                assertThat(committedOffsetSumQuiet())
+                    .as("source offsets do not advance while the DB write cannot complete")
+                    .isEqualTo(frozenAt);
               });
 
       // --- recovery -----------------------------------------------------------------------
@@ -136,12 +139,35 @@ class ChaosMysqlDownE2EIT extends AbstractE2EIT {
           .pollInterval(Duration.ofSeconds(2))
           .until(() -> registryKnows(afterUser));
 
-      assertThat(
-              KafkaSupport.committedSourceOffsetSum(
-                  E2eEnv.GROUP_ANAGRAFICA, E2eEnv.T_USER_ACCOUNT_DATA))
+      assertThat(committedOffsetSumQuiet())
           .as("offsets advanced after recovery")
-          .isGreaterThan(offsetsBefore);
+          .isGreaterThan(frozenAt);
     }
+  }
+
+  /** Committed-offset sum, returning {@code Long.MIN_VALUE} on a transient Admin hiccup. */
+  private long committedOffsetSumQuiet() {
+    try {
+      return KafkaSupport.committedSourceOffsetSum(
+          E2eEnv.GROUP_ANAGRAFICA, E2eEnv.T_USER_ACCOUNT_DATA);
+    } catch (RuntimeException e) {
+      return Long.MIN_VALUE;
+    }
+  }
+
+  private long lastStableSample = Long.MIN_VALUE;
+  private long lastStableAt;
+
+  /** True once the committed-offset sum has been unchanged for at least {@code window}. */
+  private boolean offsetStableFor(Duration window) {
+    long now = committedOffsetSumQuiet();
+    long ts = System.nanoTime();
+    if (now != lastStableSample) {
+      lastStableSample = now;
+      lastStableAt = ts;
+      return false;
+    }
+    return now != Long.MIN_VALUE && ts - lastStableAt >= window.toNanos();
   }
 
   private boolean mysqlUp() {

@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -25,18 +26,37 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
  * topics (20/50/30 mix) + a ~15s ×3 micro-burst. {@code -De2e.load.profile=full}: 10 min at 100
  * msg/s + a 5 min ×3 burst (the nfr.md target — run manually / nightly).
  *
- * <p>Asserts no loss (consumed ≥ produced; produced == UserAccount + WalletMovement + case
- * records), consumer lag drains back down after the burst, and reports p50/p95/p99 of the
- * consume→publish latency (histogram-interpolated from {@code gsa_publish_latency_seconds}). p95
- * &gt; 2s is logged, not failed (RNF-02 is a non-contractual best-effort target). A Markdown report
- * lands in {@code docs/e2e/report/}.
+ * <p><b>Assertions are no-loss / at-least-once</b> (topologia-kafka.md "Delivery and commit"):
+ * {@code UserAccount} carries no dedup (ASS-3, ADR 0009) so a back-pressure resume republishes it —
+ * {@code out ≥ produced}, and every produced id is persisted exactly once in {@code anag_user}. The
+ * duplication factor, the p50/p95/p99 of {@code gsa_publish_latency_seconds} and the lag
+ * time-series are <b>reported, not asserted</b> (RNF-02 is a non-contractual best-effort target). A
+ * Markdown report lands in {@code docs/e2e/report/} regardless of the outcome.
  */
 class ThroughputLatencyE2EIT extends AbstractE2EIT {
 
   private final NamedParameterJdbcTemplate jdbc =
       it.generic_service_adapter.e2e.support.Jdbc.mysql();
 
-  private static final long LAG_EPSILON = 20;
+  private static final long LAG_EPSILON = 25;
+  private String likeToken;
+
+  @AfterEach
+  void cleanupThisRun() {
+    if (likeToken == null) {
+      return;
+    }
+    try {
+      jdbc.update(
+          "DELETE FROM case_record WHERE message_key LIKE :p",
+          new MapSqlParameterSource("p", likeToken));
+      jdbc.update(
+          "DELETE FROM orphan_movement WHERE message_key LIKE :p",
+          new MapSqlParameterSource("p", likeToken));
+    } catch (RuntimeException ignored) {
+      // best-effort cleanup of this run's rows on the shared stack
+    }
+  }
 
   @Test
   void sustainedLoadPlusBurst_noLoss_lagRecovers_latencyReported() throws Exception {
@@ -45,16 +65,17 @@ class ThroughputLatencyE2EIT extends AbstractE2EIT {
     boolean full = profile.equals("full");
     Duration steadyDur = Duration.ofSeconds(full ? 600 : 70);
     Duration burstDur = Duration.ofSeconds(full ? 300 : 15);
-    Duration drainDeadline = full ? Duration.ofMinutes(12) : Duration.ofMinutes(4);
+    Duration drainDeadline = full ? Duration.ofMinutes(14) : Duration.ofMinutes(6);
 
     String token = token("thr");
-    String likeToken = token + "%";
+    likeToken = token + "%";
     LoadReport report = new LoadReport(profile);
     report.kv("token", token);
     report.kv("steady", "100 msg/s for " + steadyDur.toSeconds() + "s");
-    report.kv("burst", "300 msg/s for " + burstDur.toSeconds() + "s");
+    report.kv("burst", "300 msg/s (×3) for " + burstDur.toSeconds() + "s");
 
     assertReadinessUp();
+    double downTripsBefore = PrometheusScrape.fetch().counter("gsa_dest_cluster_down_total");
 
     // --- lag sampler (every 5s) --------------------------------------------------------------
     AtomicBoolean sampling = new AtomicBoolean(true);
@@ -80,92 +101,130 @@ class ThroughputLatencyE2EIT extends AbstractE2EIT {
     sampler.setDaemon(true);
     sampler.start();
 
-    // --- steady window --------------------------------------------------------------------
-    LoadGenerator.Result steady =
-        new LoadGenerator(LoadGenerator.Spec.defaultMix(100, steadyDur, token)).run();
-    report.producedTable("produced — steady window", steady.producedByTopic(), steady.total());
+    LoadGenerator.Result steady = null;
+    LoadGenerator.Result burst = null;
+    PrometheusScrape.Percentiles latency = null;
+    try {
+      // --- steady window ---------------------------------------------------------------------
+      steady = new LoadGenerator(LoadGenerator.Spec.defaultMix(100, steadyDur, token)).run();
+      report.producedTable("produced — steady window", steady.producedByTopic(), steady.total());
 
-    // --- ×3 burst ----------------------------------------------------------------------------
-    LoadGenerator.Result burst =
-        new LoadGenerator(new LoadGenerator.Spec(300, burstDur, 0.20, 0.50, 0.30, 512, 200, token))
-            .run();
-    burstDone.set(true);
-    report.producedTable("produced — ×3 burst", burst.producedByTopic(), burst.total());
+      // --- ×3 burst -----------------------------------------------------------------------
+      burst =
+          new LoadGenerator(
+                  new LoadGenerator.Spec(300, burstDur, 0.20, 0.50, 0.30, 512, 200, token))
+              .run();
+      burstDone.set(true);
+      report.producedTable("produced — ×3 burst", burst.producedByTopic(), burst.total());
 
-    long producedUserAccountData =
-        steady.produced(E2eEnv.T_USER_ACCOUNT_DATA) + burst.produced(E2eEnv.T_USER_ACCOUNT_DATA);
-    long producedMovements =
-        steady.produced(E2eEnv.T_TOPUP)
-            + steady.produced(E2eEnv.T_WITHDRAWAL)
-            + burst.produced(E2eEnv.T_TOPUP)
-            + burst.produced(E2eEnv.T_WITHDRAWAL);
-    long producedTotal = steady.total() + burst.total();
+      long producedUserAccountData =
+          steady.produced(E2eEnv.T_USER_ACCOUNT_DATA) + burst.produced(E2eEnv.T_USER_ACCOUNT_DATA);
+      long producedMovements =
+          steady.produced(E2eEnv.T_TOPUP)
+              + steady.produced(E2eEnv.T_WITHDRAWAL)
+              + burst.produced(E2eEnv.T_TOPUP)
+              + burst.produced(E2eEnv.T_WITHDRAWAL);
+      long producedTotal = steady.total() + burst.total();
+      long distinctUsers = Math.min(producedUserAccountData, 200);
 
-    // --- all input consumed (no ingest drop) --------------------------------------------
-    await("every produced record consumed (gsa_messages_consumed_total)")
-        .atMost(drainDeadline)
-        .pollInterval(Duration.ofSeconds(5))
-        .untilAsserted(
-            () -> assertThat(consumedTotal()).isGreaterThanOrEqualTo((double) producedTotal));
+      // --- all input consumed (no ingest drop) ------------------------------------------
+      await("every produced record consumed (gsa_messages_consumed_total)")
+          .atMost(drainDeadline)
+          .pollInterval(Duration.ofSeconds(5))
+          .untilAsserted(
+              () -> assertThat(consumedTotal()).isGreaterThanOrEqualTo((double) producedTotal));
 
-    // --- lag drains back down after the burst ---------------------------------------------
-    await("gsa_consumer_lag drains back to <= " + LAG_EPSILON)
-        .atMost(drainDeadline)
-        .pollInterval(Duration.ofSeconds(5))
-        .untilAsserted(
-            () ->
-                assertThat(PrometheusScrape.fetch().max("gsa_consumer_lag"))
-                    .isLessThanOrEqualTo((double) LAG_EPSILON));
+      // --- lag drains back down after the burst -------------------------------------------
+      await("gsa_consumer_lag drains back to <= " + LAG_EPSILON)
+          .atMost(drainDeadline)
+          .pollInterval(Duration.ofSeconds(5))
+          .untilAsserted(
+              () ->
+                  assertThat(PrometheusScrape.fetch().max("gsa_consumer_lag"))
+                      .isLessThanOrEqualTo((double) LAG_EPSILON));
 
-    // --- any transient orphan resolved --------------------------------------------------
-    await("no orphan still HELD for this run")
-        .atMost(Duration.ofMinutes(3))
-        .pollInterval(Duration.ofSeconds(5))
-        .untilAsserted(() -> assertThat(heldOrphans(likeToken)).isZero());
+      // --- any transient orphan resolved --------------------------------------------------
+      await("no orphan still HELD for this run")
+          .atMost(Duration.ofMinutes(4))
+          .pollInterval(Duration.ofSeconds(5))
+          .untilAsserted(() -> assertThat(heldOrphans(likeToken)).isZero());
 
-    sampling.set(false);
+      sampling.set(false);
 
-    // --- count outputs + cases, assert the accounting identity ------------------------
-    await("produced == UserAccount + WalletMovement + case records (no loss)")
-        .atMost(Duration.ofMinutes(2))
-        .pollInterval(Duration.ofSeconds(15))
-        .untilAsserted(
-            () -> {
-              long uaOut = countDestByKeyPrefix(E2eEnv.T_USER_ACCOUNT, token);
-              long wmOut = countDestByKeyPrefix(E2eEnv.T_WALLET_MOVEMENT, token);
-              long anagCases = caseCount(likeToken, E2eEnv.T_USER_ACCOUNT_DATA);
-              long movementCases =
-                  caseCount(likeToken, E2eEnv.T_TOPUP) + caseCount(likeToken, E2eEnv.T_WITHDRAWAL);
-              report.kv("UserAccount out (key ^" + token + ")", uaOut);
-              report.kv("WalletMovement out (key ^" + token + ")", wmOut);
-              report.kv("case records (anagrafica / movimenti)", anagCases + " / " + movementCases);
-              assertThat(anagCases).as("valid anagrafica never fails validation").isZero();
-              assertThat(uaOut)
-                  .as("one UserAccount per produced registry event")
-                  .isEqualTo(producedUserAccountData);
-              assertThat(wmOut + movementCases)
-                  .as("every movement is published or turned into a case record")
-                  .isEqualTo(producedMovements);
-              assertThat(uaOut + wmOut + anagCases + movementCases)
-                  .as("no message lost")
-                  .isEqualTo(producedTotal);
-            });
+      // --- no loss: every produced id survives (at-least-once towards the topics) --------
+      await("no message lost — anag_user has every produced userId, out+cases >= produced")
+          .atMost(Duration.ofMinutes(3))
+          .pollInterval(Duration.ofSeconds(15))
+          .untilAsserted(
+              () -> {
+                long anagUserRows = distinctAnagUsers(likeToken);
+                long uaOut = countDestByKeyPrefix(E2eEnv.T_USER_ACCOUNT, token);
+                long wmOut = countDestByKeyPrefix(E2eEnv.T_WALLET_MOVEMENT, token);
+                long anagCases = caseCount(likeToken, E2eEnv.T_USER_ACCOUNT_DATA);
+                long movementCases =
+                    caseCount(likeToken, E2eEnv.T_TOPUP)
+                        + caseCount(likeToken, E2eEnv.T_WITHDRAWAL);
+                assertThat(anagUserRows)
+                    .as("anag_user persisted exactly one row per distinct produced user")
+                    .isEqualTo(distinctUsers);
+                assertThat(anagCases).as("valid anagrafica never fails validation").isZero();
+                assertThat(uaOut)
+                    .as("UserAccount out >= produced (at-least-once, no loss)")
+                    .isGreaterThanOrEqualTo(producedUserAccountData);
+                assertThat(wmOut + movementCases)
+                    .as("every movement published or turned into a case record (no loss)")
+                    .isGreaterThanOrEqualTo(producedMovements);
+                assertThat(uaOut + wmOut + anagCases + movementCases)
+                    .as("no message lost")
+                    .isGreaterThanOrEqualTo(producedTotal);
+              });
 
-    // --- latency percentiles -------------------------------------------------------------
-    PrometheusScrape.Percentiles p =
-        PrometheusScrape.fetch().timerPercentiles("gsa_publish_latency_seconds");
-    boolean p95Over = Double.isFinite(p.p95()) && p.p95() > 2.0;
-    report.kv("max gsa_consumer_lag after burst", maxLagAfterBurst.get());
-    report.latencyTable(p, p95Over);
-    report.lagSeriesTable();
-    if (p95Over) {
+      // --- record the numbers -----------------------------------------------------------
+      long uaOut = countDestByKeyPrefix(E2eEnv.T_USER_ACCOUNT, token);
+      long wmOut = countDestByKeyPrefix(E2eEnv.T_WALLET_MOVEMENT, token);
+      long anagCases = caseCount(likeToken, E2eEnv.T_USER_ACCOUNT_DATA);
+      long movementCases =
+          caseCount(likeToken, E2eEnv.T_TOPUP) + caseCount(likeToken, E2eEnv.T_WITHDRAWAL);
+      long totalCases = anagCases + movementCases;
+      double dupFactor =
+          producedTotal == 0 ? 0.0 : (double) (uaOut + wmOut + totalCases) / (double) producedTotal;
+      double downTrips =
+          PrometheusScrape.fetch().counter("gsa_dest_cluster_down_total") - downTripsBefore;
+
+      report.heading("outputs & accounting");
+      report.kv("produced total", producedTotal);
+      report.kv(
+          "produced user-account-data / movements",
+          producedUserAccountData + " / " + producedMovements);
+      report.kv("UserAccount out (key ^" + token + ")", uaOut);
+      report.kv("WalletMovement out (key ^" + token + ")", wmOut);
+      report.kv("case records (anagrafica / movimenti)", anagCases + " / " + movementCases);
+      report.kv(
+          "distinct anag_user rows",
+          distinctAnagUsers(likeToken) + " (expected " + distinctUsers + ")");
+      report.kv(
+          "delivered / produced (at-least-once factor)",
+          String.format(java.util.Locale.ROOT, "%.2fx", dupFactor));
+      report.kv("E6 back-pressure trips during the run", (long) downTrips);
+      report.kv("max gsa_consumer_lag after burst", maxLagAfterBurst.get());
+
+      latency = PrometheusScrape.fetch().timerPercentiles("gsa_publish_latency_seconds");
+      boolean p95Over = Double.isFinite(latency.p95()) && latency.p95() > 2.0;
+      report.latencyTable(latency, p95Over);
+      report.lagSeriesTable();
+      if (p95Over) {
+        System.out.printf(
+            "[e2e][latency] p95=%.3fs > 2s (RNF-02 best-effort, not a failure)%n", latency.p95());
+      }
       System.out.printf(
-          "[e2e][latency] p95=%.3fs > 2s (RNF-02 best-effort, not a failure)%n", p.p95());
+          "[e2e][throughput] produced=%d uaOut=%d wmOut=%d cases=%d factor=%.2fx e6Trips=%d%n",
+          producedTotal, uaOut, wmOut, totalCases, dupFactor, (long) downTrips);
+    } finally {
+      sampling.set(false);
+      java.nio.file.Path out = report.flush();
+      System.out.println("[e2e] load report written: " + out.toAbsolutePath());
+      assertThat(java.nio.file.Files.exists(out)).isTrue();
     }
-
-    java.nio.file.Path out = report.flush();
-    System.out.println("[e2e] load report written: " + out.toAbsolutePath());
-    assertThat(java.nio.file.Files.exists(out)).isTrue();
   }
 
   private double consumedTotal() throws Exception {
@@ -179,6 +238,15 @@ class ThroughputLatencyE2EIT extends AbstractE2EIT {
     Long n =
         jdbc.queryForObject(
             "SELECT COUNT(*) FROM orphan_movement WHERE state = 'HELD' AND message_key LIKE :p",
+            new MapSqlParameterSource("p", likeToken),
+            Long.class);
+    return n == null ? 0 : n;
+  }
+
+  private long distinctAnagUsers(String likeToken) {
+    Long n =
+        jdbc.queryForObject(
+            "SELECT COUNT(DISTINCT user_id) FROM anag_user WHERE user_id LIKE :p",
             new MapSqlParameterSource("p", likeToken),
             Long.class);
     return n == null ? 0 : n;

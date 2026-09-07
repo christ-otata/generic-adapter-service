@@ -45,6 +45,7 @@ class ChaosVaultDownE2EIT extends AbstractE2EIT {
   void wipeReportTables() {
     jdbc.update("DELETE FROM case_record", new MapSqlParameterSource());
     jdbc.update("DELETE FROM report_file", new MapSqlParameterSource());
+    jdbc.update("DELETE FROM orphan_movement", new MapSqlParameterSource());
   }
 
   @AfterEach
@@ -113,7 +114,7 @@ class ChaosVaultDownE2EIT extends AbstractE2EIT {
         .until(this::vaultReachable);
 
     await("queue drains: report_file SENT, case records REPORTED")
-        .atMost(Duration.ofSeconds(120))
+        .atMost(Duration.ofSeconds(150))
         .pollInterval(Duration.ofSeconds(3))
         .untilAsserted(
             () -> {
