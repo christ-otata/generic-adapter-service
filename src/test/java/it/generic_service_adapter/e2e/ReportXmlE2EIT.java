@@ -3,6 +3,7 @@ package it.generic_service_adapter.e2e;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import it.generic_service_adapter.e2e.support.ComposeControl;
 import it.generic_service_adapter.e2e.support.E2eEnv;
 import it.generic_service_adapter.e2e.support.PrometheusScrape;
 import java.nio.file.Files;
@@ -95,21 +96,24 @@ class ReportXmlE2EIT extends AbstractE2EIT {
     assertThat(topicNames(doc))
         .contains(E2eEnv.T_USER_ACCOUNT_DATA, E2eEnv.T_TOPUP, E2eEnv.T_WITHDRAWAL);
 
-    // no re-create / no re-send of that same file on subsequent ticks
+    // no re-create / no re-send: let >= 2 more ReportRunner ticks (30s cadence in e2e) elapse with
+    // the file already SENT, then assert once — same id, still SENT, same attempts, and NOT a
+    // second successful Vault POST of that file.
     int attemptsAtSend = ((Number) reportFileCol(reportFileId, "attempts")).intValue();
-    Object sentAtSend = reportFileCol(reportFileId, "sent_at");
-    await("the SENT report_file is untouched across the next ticks")
-        .during(Duration.ofSeconds(40))
-        .atMost(Duration.ofSeconds(45))
-        .pollInterval(Duration.ofSeconds(10))
-        .untilAsserted(
-            () -> {
-              assertThat(distinctReportFileIds(marker)).containsExactly(reportFileId);
-              assertThat(reportFileState(reportFileId)).isEqualTo("SENT");
-              assertThat(((Number) reportFileCol(reportFileId, "attempts")).intValue())
-                  .isEqualTo(attemptsAtSend);
-              assertThat(reportFileCol(reportFileId, "sent_at")).isEqualTo(sentAtSend);
-            });
+    double vaultOkAtSend = vaultOk();
+    long ticksBaseline = reportRunnerTicks();
+    await("two more ReportRunner ticks elapsed with the file already SENT")
+        .atMost(Duration.ofSeconds(150))
+        .pollInterval(Duration.ofSeconds(5))
+        .until(() -> reportRunnerTicks() >= ticksBaseline + 2);
+
+    assertThat(distinctReportFileIds(marker)).containsExactly(reportFileId);
+    assertThat(reportFileState(reportFileId)).isEqualTo("SENT");
+    assertThat(((Number) reportFileCol(reportFileId, "attempts")).intValue())
+        .isEqualTo(attemptsAtSend);
+    assertThat(vaultOk())
+        .as("no second successful Vault POST of the same file")
+        .isEqualTo(vaultOkAtSend);
     try (var files = Files.list(Path.of(E2eEnv.REPORT_SPOOL_DIR))) {
       assertThat(files.map(p -> p.getFileName().toString()))
           .filteredOn(nm -> nm.equals("report-" + reportFileId + ".xml"))
@@ -205,6 +209,14 @@ class ReportXmlE2EIT extends AbstractE2EIT {
 
   private double vaultOk() throws Exception {
     return PrometheusScrape.fetch().counter("gsa_vault_send_total", Map.of("outcome", "ok"));
+  }
+
+  /** How many empty ReportRunner ticks the adapter has logged so far (30s cadence in e2e). */
+  private long reportRunnerTicks() {
+    return ComposeControl.logsSince("adapter", 600)
+        .lines()
+        .filter(l -> l.contains("no PENDING_REPORT case records this tick"))
+        .count();
   }
 
   // --- XML helpers -------------------------------------------------------------------------
