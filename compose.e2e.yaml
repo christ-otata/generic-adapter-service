@@ -48,6 +48,15 @@ services:
     container_name: gsa-adapter
     environment:
       SPRING_PROFILES_ACTIVE: e2e
+      # --- WP9 suite tuning (test harness only, not a deployment setting) ----------------
+      # ReportXmlE2EIT / ChaosVaultDownE2EIT need the report runner's early trigger (RF-33) to
+      # fire on a handful of case records instead of the 500 default, so a scenario does not
+      # have to wait out the 15-min scheduled tick. Relaxed-binding of gsa.report.pending-report-threshold.
+      GSA_REPORT_PENDINGREPORTTHRESHOLD: "5"
+      # ChaosVaultDownE2EIT asserts the backlog-age alert; 2m (application-e2e.yml) would make the
+      # scenario ~3min longer for a log line. Relaxed-binding of
+      # gsa.alert-thresholds.oldest-unsent-report-age-threshold.
+      GSA_ALERTTHRESHOLDS_OLDESTUNSENTREPORTAGETHRESHOLD: "15s"
     depends_on:
       kafka-source:
         condition: service_healthy

@@ -21,8 +21,13 @@ COPY .mvn/ .mvn/
 COPY mvnw pom.xml ./
 RUN ./mvnw -q -B -DskipTests dependency:go-offline || true
 
+# Only the production sources shape this image. `-Dmaven.test.skip=true` (not just
+# `-DskipTests`) so the e2e Failsafe sources under src/test/**/e2e/ never enter the
+# in-image compile: they talk to the running stack over the published host ports, they
+# are not part of the artifact, and keeping them out means an edit to a scenario file
+# does not invalidate this layer / trigger a ~10-min cold rebuild.
 COPY src/ src/
-RUN ./mvnw -q -B -DskipTests package
+RUN ./mvnw -q -B -Dmaven.test.skip=true package
 
 # --- runtime stage: JRE + the fat jar -------------------------------------------
 FROM eclipse-temurin:21-jre AS runtime
