@@ -223,10 +223,22 @@
 				<artifactId>maven-failsafe-plugin</artifactId>
 				<executions>
 					<execution>
+						<!-- Default id `default`; the `e2e` profile disables this one and
+						     enables `e2e-tests` instead, so `-Pe2e` runs ONLY *E2EIT.java. -->
 						<goals>
 							<goal>integration-test</goal>
 							<goal>verify</goal>
 						</goals>
+						<configuration>
+							<!-- *E2EIT.java also ends in `IT`, so Failsafe's default include
+							     (**/*IT.java) would pick it up on a plain `./mvnw verify`. The
+							     WP9 e2e smoke needs the full compose.e2e.yaml stack up, which
+							     the normal build has no reason to require: keep it out here,
+							     it only runs under `-Pe2e` (see the `e2e` profile below). -->
+							<excludes>
+								<exclude>**/*E2EIT.java</exclude>
+							</excludes>
+						</configuration>
 					</execution>
 				</executions>
 			</plugin>
@@ -346,5 +358,48 @@
 			</plugin>
 		</plugins>
 	</build>
+
+	<profiles>
+		<!-- WP9 "wire the hooks": the black-box end-to-end suite. Opt-in only.
+		     `./mvnw verify -Pe2e` runs ONLY **/*E2EIT.java, and expects the full
+		     stack from compose.e2e.yaml to be already up (see that file's header
+		     for the exact `docker compose` commands).
+		     Plain `./mvnw verify` is unchanged: the default Failsafe execution
+		     excludes *E2EIT.java, this profile is inert unless selected.
+		     The chaos / load scenario authoring itself is test-e2e's (step 2). -->
+		<profile>
+			<id>e2e</id>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-failsafe-plugin</artifactId>
+						<executions>
+							<!-- Turn the normal *IT.java run off under -Pe2e... -->
+							<execution>
+								<id>default</id>
+								<phase>none</phase>
+							</execution>
+							<!-- ...and run the e2e smoke instead. -->
+							<execution>
+								<id>e2e-tests</id>
+								<goals>
+									<goal>integration-test</goal>
+									<goal>verify</goal>
+								</goals>
+								<configuration>
+									<includes>
+										<include>**/*E2EIT.java</include>
+									</includes>
+									<!-- annul the inherited *E2EIT.java exclusion -->
+									<excludes combine.self="override"/>
+								</configuration>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
 
 </project>
