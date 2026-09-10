@@ -12,9 +12,12 @@ import it.generic_service_adapter.domain.publish.DestinationPublishException;
 import it.generic_service_adapter.domain.publish.MovementPublisher;
 import it.generic_service_adapter.domain.publish.PublishResult;
 import it.generic_service_adapter.mapping.common.Iso8601;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.RecordMetadata;
@@ -27,10 +30,13 @@ import org.springframework.stereotype.Component;
  * Protobuf value serializer, Schema Registry, {@code enable.idempotence=true}, {@code acks=all}).
  * Mirror of {@code KafkaUserAccountPublisher}.
  *
- * <p>Synchronous {@code send(topic, key = accountId, WalletMovement).get()} (ADR 0008, 0009): the
- * call blocks until the broker acknowledges, so a produce failure is immediate and surfaces as
- * {@link DestinationPublishException} — the caller then does not ack and the message is
- * redelivered.
+ * <p>Synchronous {@code send(topic, key = accountId, WalletMovement).get(publishTimeout)} (ADR
+ * 0008, 0009): the call blocks until the broker acknowledges, so a produce failure is immediate and
+ * surfaces as {@link DestinationPublishException} — the caller then does not ack and the message is
+ * redelivered. Failure handling mirrors {@code KafkaUserAccountPublisher}: a produce error thrown
+ * synchronously by {@code KafkaTemplate.send(...)} (metadata unavailable within {@code
+ * max.block.ms}, serialization, producer closed) is wrapped too, and {@code get(publishTimeout)} is
+ * the listener-thread backstop above {@code delivery.timeout.ms} (ADR 0007).
  *
  * <p>The {@code WalletMovementRecord -> WalletMovement} assembly is a pure structural copy
  * (direction already resolved, timestamps already {@link Instant}s, {@code valueDate} already a
@@ -54,9 +60,12 @@ public class KafkaMovementPublisher implements MovementPublisher {
   }
 
   private PublishResult send(String topic, WalletMovementRecord movement, WalletMovement message) {
+    Duration publishTimeout = kafkaDestinationProperties.publishTimeout();
     try {
       SendResult<String, Message> sendResult =
-          destinationKafkaTemplate.send(topic, movement.accountId(), message).get();
+          destinationKafkaTemplate
+              .send(topic, movement.accountId(), message)
+              .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
       RecordMetadata metadata = sendResult.getRecordMetadata();
       log.debug(
           "WalletMovement published: transactionId={} accountId={} direction={} -> {}-{}@{}",
@@ -71,8 +80,21 @@ public class KafkaMovementPublisher implements MovementPublisher {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new DestinationPublishException("interrupted while publishing to " + topic, e);
+    } catch (TimeoutException e) {
+      // java.util.concurrent.TimeoutException from get(publishTimeout) — NOT Kafka's. Backstop:
+      // publishTimeout > delivery.timeout.ms, so the record future genuinely never resolved.
+      // DownstreamErrorClassifier maps this to E6 so back-pressure engages.
+      throw new DestinationPublishException(
+          "publish to " + topic + " did not complete within " + publishTimeout, e);
     } catch (ExecutionException e) {
       throw new DestinationPublishException("publish to " + topic + " failed", e.getCause());
+    } catch (RuntimeException e) {
+      // Synchronous failure from KafkaTemplate.send(...) itself — Spring wraps it in
+      // org.springframework.kafka.KafkaException (metadata not available within max.block.ms,
+      // serialization, producer closed). It never reaches the future, so wrap it here too or it
+      // escapes the orchestrator's catch (DestinationPublishException) and bypasses E5/E6/E7
+      // classification entirely (the WP9 hang: the never-recover handler just spins).
+      throw new DestinationPublishException("publish to " + topic + " failed", e);
     }
   }
 

@@ -27,13 +27,17 @@ import org.springframework.stereotype.Component;
  *       io.confluent.kafka.schemaregistry.*} exception), a Protobuf encode error ({@code
  *       com.google.protobuf.*}), or a bare {@link SerializationException} with no nested I/O cause.
  *       Systemic (bug / schema mismatch), not transient: no retry, no back-pressure.
- *   <li><b>E6</b> — transient "the downstream cannot cope": {@link TimeoutException}, {@link
- *       RetriableException}, {@link NetworkException}, {@link CoordinatorNotAvailableException},
- *       {@link InterruptException}, any {@code java.net.*} / {@link IOException} (this also covers
- *       a Schema Registry that is <em>unreachable</em> — it surfaces as a {@link
- *       SerializationException} wrapping an {@link IOException} — matching nfr.md "Schema Registry
- *       down → same back-pressure as E6"), or a {@link KafkaException} whose message is "Failed to
- *       update metadata" / "Producer closed" / "... not present in metadata".
+ *   <li><b>E6</b> — transient "the downstream cannot cope": Kafka's {@link TimeoutException},
+ *       {@link RetriableException}, {@link NetworkException}, {@link
+ *       CoordinatorNotAvailableException}, {@link InterruptException}, {@link
+ *       java.util.concurrent.TimeoutException} (the publisher's {@code future.get(publishTimeout)}
+ *       backstop when the destination hangs — same "cannot cope" as Kafka's own timeout, so it
+ *       belongs in E6 here rather than falling through to E7 retry), any {@code java.net.*} /
+ *       {@link IOException} (this also covers a Schema Registry that is <em>unreachable</em> — it
+ *       surfaces as a {@link SerializationException} wrapping an {@link IOException} — matching
+ *       nfr.md "Schema Registry down → same back-pressure as E6"), or a {@link KafkaException}
+ *       whose message is "Failed to update metadata" / "Producer closed" / "... not present in
+ *       metadata".
  *   <li><b>E7</b> — anything else unexpected. Limited retry through {@code *.retry.<n>}.
  * </ol>
  */
@@ -73,7 +77,11 @@ public class DownstreamErrorClassifier {
           || cursor instanceof RetriableException
           || cursor instanceof NetworkException
           || cursor instanceof CoordinatorNotAvailableException
-          || cursor instanceof InterruptException) {
+          || cursor instanceof InterruptException
+          // java.util.concurrent.TimeoutException — unrelated to Kafka's same-named class; raised
+          // only by the publishers' future.get(publishTimeout) backstop, which by construction
+          // means the destination did not respond. Classify as E6, not E7.
+          || cursor instanceof java.util.concurrent.TimeoutException) {
         kafkaTransient = true;
       }
       if (cursor instanceof KafkaException

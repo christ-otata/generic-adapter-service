@@ -116,6 +116,18 @@ gsa:
       acks: all
       enable-idempotence: true
       max-in-flight-requests-per-connection: 5
+      # Explicit produce deadlines (ADR 0007 — part of the E6 mechanism). With a destination
+      # cluster that is unreachable these bound send().get() so it fails fast with a Kafka
+      # TimeoutException (-> E6 back-pressure) instead of wedging the source listener thread.
+      # Kafka constraint: delivery-timeout-millis >= linger-millis + request-timeout-millis
+      # (enforced in KafkaDestinationProperties' compact constructor). publish-timeout is the
+      # publisher's future.get(...) backstop and MUST be > delivery-timeout-millis.
+      # These are the dev/e2e defaults (fast failure for local chaos drills + tests);
+      # application-prod.yml overrides them with a more tolerant budget.
+      max-block-millis: 10000
+      request-timeout-millis: 10000
+      delivery-timeout-millis: 30000
+      publish-timeout: 40s
       topics:
         user-account: UserAccount
         wallet-movement: WalletMovement

@@ -72,6 +72,20 @@ public class DestinationKafkaProducerConfig {
     configs.put(ProducerConfig.LINGER_MS_CONFIG, kafkaDestinationProperties.lingerMillis());
     configs.put(ProducerConfig.BATCH_SIZE_CONFIG, kafkaDestinationProperties.batchSize());
 
+    // Explicit produce deadlines (ADR 0007 — part of the E6 mechanism): with a destination that is
+    // unreachable, these bound send().get() so it fails with a Kafka TimeoutException instead of
+    // hanging the source listener thread. max.block.ms caps the synchronous part of send()
+    // (metadata / buffer / InitProducerId); delivery.timeout.ms caps the record future. Kafka
+    // requires delivery.timeout.ms >= linger.ms + request.timeout.ms — enforced in
+    // KafkaDestinationProperties' compact constructor so a bad override fails fast at startup.
+    configs.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, kafkaDestinationProperties.maxBlockMillis());
+    configs.put(
+        ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG,
+        kafkaDestinationProperties.requestTimeoutMillis());
+    configs.put(
+        ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG,
+        kafkaDestinationProperties.deliveryTimeoutMillis());
+
     configs.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
     configs.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaProtobufSerializer.class);
 

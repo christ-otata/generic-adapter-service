@@ -29,6 +29,28 @@ class DownstreamErrorClassifierTest {
   }
 
   @Test
+  void javaConcurrentTimeoutFromPublishBackstopIsE6NotE7() {
+    // The publishers' future.get(publishTimeout) backstop raises java.util.concurrent's
+    // TimeoutException (unrelated to Kafka's same-named class). It must land in E6 back-pressure,
+    // not fall through to E7 per-message retry.
+    assertThat(classify(new java.util.concurrent.TimeoutException("publish exceeded PT40S")))
+        .isEqualTo(ErrorCategory.E6);
+  }
+
+  @Test
+  void kafkaExceptionSendFailedWrappingKafkaTimeoutIsE6() {
+    // What KafkaTemplate.send(...) throws synchronously when metadata is unavailable within
+    // max.block.ms: KafkaException("Send failed") caused by Kafka's TimeoutException.
+    assertThat(
+            classify(
+                new org.apache.kafka.common.KafkaException(
+                    "Send failed",
+                    new TimeoutException(
+                        "Topic UserAccount not present in metadata after 10000 ms"))))
+        .isEqualTo(ErrorCategory.E6);
+  }
+
+  @Test
   void kafkaNetworkExceptionIsE6() {
     assertThat(classify(new NetworkException("disconnected"))).isEqualTo(ErrorCategory.E6);
   }

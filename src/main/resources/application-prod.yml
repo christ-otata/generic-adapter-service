@@ -32,6 +32,14 @@ gsa:
       sasl-password: ${GSA_KAFKA_DESTINATION_PASSWORD}
       linger-millis: 10
       batch-size: 32768
+      # More tolerant than the dev/e2e defaults in application.yml: a ~2-min total delivery
+      # budget rides out a rolling broker restart / brief partition-leader election without
+      # tripping GLOBAL back-pressure, while publish-timeout still hard-caps the listener
+      # thread. Constraint holds: 120000 >= 10 (linger) + 15000 (request); 150s > 120s.
+      max-block-millis: 15000
+      request-timeout-millis: 15000
+      delivery-timeout-millis: 120000
+      publish-timeout: 150s
 
   retry:
     # = retry-topic partition count (6 prod, topologia-kafka.md)

@@ -14,8 +14,11 @@ import it.generic_service_adapter.domain.publish.DestinationPublishException;
 import it.generic_service_adapter.domain.publish.PublishResult;
 import it.generic_service_adapter.domain.publish.UserAccountPublisher;
 import it.generic_service_adapter.mapping.common.Iso8601;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.RecordMetadata;
@@ -27,9 +30,15 @@ import org.springframework.stereotype.Component;
  * {@link UserAccountPublisher} on the destination cluster (WP1 {@code destinationKafkaTemplate}:
  * Protobuf value serializer, Schema Registry, {@code enable.idempotence=true}, {@code acks=all}).
  *
- * <p>Synchronous {@code send(topic, key = userId, UserAccount).get()} (ADR 0008, 0009): the call
- * blocks until the broker acknowledges, so a produce failure is immediate and surfaces as {@link
- * DestinationPublishException} — the caller then does not ack and the message is redelivered.
+ * <p>Synchronous {@code send(topic, key = userId, UserAccount).get(publishTimeout)} (ADR 0008,
+ * 0009): the call blocks until the broker acknowledges, so a produce failure is immediate and
+ * surfaces as {@link DestinationPublishException} — the caller then does not ack and the message is
+ * redelivered. Both a produce failure that reaches the record future and one thrown synchronously
+ * by {@code KafkaTemplate.send(...)} (metadata unavailable within {@code max.block.ms},
+ * serialization, producer closed) are wrapped, so the failure is always classified (E5 / E6 / E7)
+ * rather than escaping the orchestrator's {@code catch (DestinationPublishException)}. The {@code
+ * get(publishTimeout)} backstop (ADR 0007) bounds the listener thread even if the producer-level
+ * {@code delivery.timeout.ms} somehow does not fire.
  *
  * <p>The {@code UserAccountRecord -> UserAccount} assembly is a pure structural copy (enums already
  * resolved, timestamps already {@link Instant}s): kept here rather than behind a {@code mapping}
@@ -52,9 +61,12 @@ public class KafkaUserAccountPublisher implements UserAccountPublisher {
   }
 
   private PublishResult send(String topic, UserAccountRecord userAccount, UserAccount message) {
+    Duration publishTimeout = kafkaDestinationProperties.publishTimeout();
     try {
       SendResult<String, Message> sendResult =
-          destinationKafkaTemplate.send(topic, userAccount.userId(), message).get();
+          destinationKafkaTemplate
+              .send(topic, userAccount.userId(), message)
+              .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
       RecordMetadata metadata = sendResult.getRecordMetadata();
       log.debug(
           "UserAccount published: userId={} version={} -> {}-{}@{}",
@@ -68,8 +80,22 @@ public class KafkaUserAccountPublisher implements UserAccountPublisher {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new DestinationPublishException("interrupted while publishing to " + topic, e);
+    } catch (TimeoutException e) {
+      // java.util.concurrent.TimeoutException from get(publishTimeout) — NOT Kafka's. Backstop
+      // (defence in depth): publishTimeout is deliberately > delivery.timeout.ms, so reaching here
+      // means the record future never resolved (e.g. idempotent InitProducerId against an
+      // unresolvable host). DownstreamErrorClassifier maps this to E6 so back-pressure engages.
+      throw new DestinationPublishException(
+          "publish to " + topic + " did not complete within " + publishTimeout, e);
     } catch (ExecutionException e) {
       throw new DestinationPublishException("publish to " + topic + " failed", e.getCause());
+    } catch (RuntimeException e) {
+      // Synchronous failure from KafkaTemplate.send(...) itself — Spring wraps it in
+      // org.springframework.kafka.KafkaException (metadata not available within max.block.ms,
+      // serialization error, producer closed). It never reaches the future, so wrap it here too or
+      // it escapes the orchestrator's catch (DestinationPublishException) and bypasses E5/E6/E7
+      // classification entirely (the WP9 hang: the never-recover handler just spins).
+      throw new DestinationPublishException("publish to " + topic + " failed", e);
     }
   }
 
