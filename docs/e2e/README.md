@@ -108,7 +108,16 @@ reported to `docs/e2e/report/load-*.md`, not asserted.
 
 ## Runtime
 
-The `ci` profile suite is Docker-heavy and includes deliberately slow chaos
-waits (E6 trips on the ~120s producer `delivery.timeout.ms`; the orphan expiry
-waits out the real 60s `holdTimeout`). Budget **~20–30 min** for a full `ci`
-run after the image is built. The `full` load profile adds ~15 min on top.
+The `ci` profile suite is Docker-heavy and includes a few deliberately slow
+waits (the orphan-expiry scenario waits out the real 60s `holdTimeout`; the E6
+trip takes ~`gsa.kafka.destination.delivery-timeout-millis`, 30s in e2e). Budget
+**~20 min** for a full `ci` run after the image is built (last green run:
+17 test methods, ~18 min of Failsafe). The `full` load profile adds ~13 min on
+top of the `ci` `ThroughputLatencyE2EIT` (~3 min → ~16 min).
+
+## Last green run
+
+`./scripts/e2e/run-e2e.sh --load-profile ci` — `docs/e2e/report/run-20260910-220815-summary.txt`
+(17/17), load numbers in `docs/e2e/report/load-20260910-220923-ci.md`
+(11 500 produced = 11 500 published, 0 case records, 0 E6 trips, lag 0
+throughout, p50/p95/p99 = 6.2 / 10.1 / 18.5 ms).

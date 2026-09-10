@@ -1,0 +1,28 @@
+WP9 e2e run 20260910-220815 — load profile: ci
+mvn exit code: 0
+
+=== Failsafe summary (target/failsafe-reports/*.txt) ===
+  target/failsafe-reports/it.generic_service_adapter.e2e.ChaosDestinationDownE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 85.20 s -- in it.generic_service_adapter.e2e.ChaosDestinationDownE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ChaosMysqlDownE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 75.89 s -- in it.generic_service_adapter.e2e.ChaosMysqlDownE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ChaosVaultDownE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 71.61 s -- in it.generic_service_adapter.e2e.ChaosVaultDownE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.GracefulRestartE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 42.12 s -- in it.generic_service_adapter.e2e.GracefulRestartE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.IdempotencyE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 54.17 s -- in it.generic_service_adapter.e2e.IdempotencyE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.MovementHappyPathE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 49.13 s -- in it.generic_service_adapter.e2e.MovementHappyPathE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.OrderingE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 24.46 s -- in it.generic_service_adapter.e2e.OrderingE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.OrphanMovementE2EIT.txt:Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 114.7 s -- in it.generic_service_adapter.e2e.OrphanMovementE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.RegistryHappyPathE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 23.01 s -- in it.generic_service_adapter.e2e.RegistryHappyPathE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ReportXmlE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 128.1 s -- in it.generic_service_adapter.e2e.ReportXmlE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.StackWiringE2EIT.txt:Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 10.45 s -- in it.generic_service_adapter.e2e.StackWiringE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ThroughputLatencyE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 190.0 s -- in it.generic_service_adapter.e2e.ThroughputLatencyE2EIT
+  target/failsafe-reports/it.generic_service_adapter.e2e.ValidationE2EIT.txt:Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 51.66 s -- in it.generic_service_adapter.e2e.ValidationE2EIT
+
+=== failsafe-summary.xml ===
+<?xml version="1.0" encoding="UTF-8"?>
+<failsafe-summary xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/failsafe-summary.xsd" result="null" timeout="false">
+    <completed>17</completed>
+    <errors>0</errors>
+    <failures>0</failures>
+    <skipped>0</skipped>
+    <flakes>0</flakes>
+    <failureMessage xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>
+</failsafe-summary>
