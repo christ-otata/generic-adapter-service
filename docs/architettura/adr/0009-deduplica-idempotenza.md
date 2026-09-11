@@ -25,7 +25,14 @@ and the final deduplication delegated to the downstream.
   constraint. Multiple `NULL`s are allowed, so the registry (null `txn_dedup`)
   does not enter the constraint. If the `transaction_id` is already present
   **in the same daily partition**, the adapter does **not** republish and does
-  **not** write a second audit row.
+  **not** write a second audit row. The same **pre-publish** check
+  (`AuditStore.movementAlreadyRecordedToday`) runs identically on all three
+  call sites that can write a `WALLET_MOVEMENT` `audit` row: the live movement
+  orchestrator, `OrphanReprocessor` on a resolved orphan, and an `inbound/retry`
+  re-attempt (WP6) — so a same-day replay is skipped no matter which of the
+  three paths reaches it first. The skip increments
+  `gsa_movements_skipped_total{reason=same_day_replay}` regardless of which
+  call site produced it (one metric series, not three).
 - **Dedup granularity**: `published_date` (the generated `DATE(published_at)`
   column) is part of the constraint because `audit` is partitioned by day on
   that same column (MySQL constraint: every `UNIQUE` includes the partition

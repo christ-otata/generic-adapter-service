@@ -21,11 +21,28 @@ shutdown.
 - **`downstream` health group** (separate, not in readiness): destination
   cluster, Schema Registry, Vault. Feeds the health endpoint and alerts; if
   `DOWN` the replica **stays ready** (it is under back-pressure).
+- **Spring Boot 4.1 ships neither a `flyway` nor a `kafka` health-indicator id**
+  (verified: zero health-related classes in the 4.1.1
+  `spring-boot-flyway`/`spring-boot-kafka` jars) — both referenced ids are
+  **custom contributors** in `config/observability/health`: `flywayHealthIndicator`
+  wraps the app's `Flyway` bean; `kafkaHealthIndicator` probes **only the
+  source cluster** (`AdminClient.describeCluster()` with a short
+  `gsa.health.source-kafka-timeout`, default 2s) — the destination cluster,
+  Schema Registry and Vault are the separate `downstream` group below, also
+  custom contributors (`destinationKafka`, `schemaRegistry`, `vault`), each a
+  short reachability probe (`gsa.health.downstream.*-timeout`).
 - **Shutdown**: `server.shutdown=graceful` + ordered stop of the
   `KafkaListenerContainer`: on `SIGTERM` no new `poll()`, in-flight messages
-  complete `publish → audit → ack`, then the context closes.
-- Kubernetes `terminationGracePeriodSeconds` > maximum drain time: value agreed
-  with `devops`.
+  complete `publish → audit → ack`, then the context closes. **No custom
+  `SmartLifecycle` is needed** for this ordering: `KafkaListenerEndpointRegistry`
+  already stops at Spring's own default container phase
+  (`AbstractMessageListenerContainer.DEFAULT_PHASE = Integer.MAX_VALUE-100`),
+  which runs strictly before the destination `ProducerFactory` and the Hikari
+  `DataSource` are destroyed as ordinary beans — asserted by an integration
+  test rather than assumed. `spring.lifecycle.timeout-per-shutdown-phase` caps
+  each phase at 30s.
+- Kubernetes `terminationGracePeriodSeconds` > maximum drain time (strictly
+  above the 30s shutdown-phase cap above): value agreed with `devops`.
 
 ## Alternatives considered
 
@@ -46,3 +63,10 @@ shutdown.
 - **Constrains downstream:** `devops` configures the probes on the Actuator
   `readiness` / `liveness` groups, the alerting on the `downstream` group and
   `terminationGracePeriodSeconds`.
+
+> Updated post-M9 (2026-09-11, WP8): recorded that Spring Boot 4.1 does not
+> provide `flyway`/`kafka` health-indicator ids natively (custom contributors
+> in `config/observability/health` were needed) and that no custom
+> `SmartLifecycle` was required for the shutdown ordering (the default
+> container phase already sequences correctly, verified by test). Neither
+> changes the Decision itself.

@@ -73,7 +73,7 @@ versioned configuration (RNF-05, RNF-16).
 | [`contratti.md`](contratti.md) | `.proto` schema for `UserAccount` / `WalletMovement`, JSON→proto mapping, Schema Registry (subject + compat), report XSD boundaries, downstream contract. |
 | [`flussi.md`](flussi.md) | `sequenceDiagram` for the 7 main flows. |
 | [`nfr.md`](nfr.md) | Throughput, latency, back-pressure, observability, health, shutdown, per-environment security. |
-| [`dipendenze.md`](dipendenze.md) | New dependencies to add to `pom.xml` (Maven coordinates + rationale) and runtime infrastructure dependencies. |
+| [`dipendenze.md`](dipendenze.md) | `pom.xml` dependencies (Maven coordinates + rationale, including the WP9 e2e-only test-harness artifacts) and runtime infrastructure dependencies. |
 | [`adr/`](adr/index.md) | 20 Architecture Decision Records (0001-0018 from the confirmed decisions, 0019-0020 pre-existing and kept). |
 
 ## Diagrams
@@ -87,7 +87,7 @@ template); Mermaid is rendered at export time. See ADR 0020.
 
 - **`adapter-dev`** — component plan ([`componenti.md`](componenti.md)),
   contracts ([`contratti.md`](contratti.md)), flows ([`flussi.md`](flussi.md)),
-  data schema ([`modello-dati.md`](modello-dati.md)), dependencies to add
+  data schema ([`modello-dati.md`](modello-dati.md)), dependencies
   ([`dipendenze.md`](dipendenze.md)).
 - **`devops`** — deploy constraints in [`nfr.md`](nfr.md): scaling targets
   (partitions 3 dev / 6 prod, replicas 2 / 3, CPU HPA in prod), probes

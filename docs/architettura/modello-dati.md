@@ -121,6 +121,16 @@ tables): a `PENDING_REPORT` case record has a null `report_file_id`.
 have a **composite PK** that includes the partition column (see "MySQL 8.0
 redesigns").
 
+**Who writes `audit`.** Three call sites, all through the same `AuditStore`
+port and all in a local transaction opened **after** the confirmed publish
+(ADR 0008): the live orchestrators (`RegistryCommit` for `USER_ACCOUNT`,
+`MovementCommit` for `WALLET_MOVEMENT`), `OrphanReprocessor` on a resolved
+orphan (same `MovementCommit`-shaped write), and an `inbound/retry` re-attempt
+on a confirmed re-publish (WP6 — it re-uses `RegistryCommit` / `MovementCommit`
+directly rather than a fourth write path). The pre-publish
+`movementAlreadyRecordedToday` dedup check runs identically on all three
+movement-writing call sites.
+
 ## MySQL 8.0 redesigns
 
 Compared with the PostgreSQL hypothesis, the retarget onto MySQL 8.0 forces three
@@ -254,7 +264,12 @@ stateDiagram-v2
   `ReportRunner` on each tick sends, in `created_at` order, those with
   `next_attempt_at <= now()` (ADR [0016](adr/0016-report-runner-in-process.md)).
 - Alert when the queue exceeds a length threshold or when the oldest unsent row
-  exceeds a maximum age (RF-23).
+  exceeds a maximum age (RF-23) — read off `state = 'PENDING_SEND'` rather than
+  `state <> 'SENT'` like the send queue above. The two predicates are
+  equivalent given the state machine (a row is never `PURGED` without first
+  being `SENT`), just phrased differently at the two call sites
+  (`ReportFileStore.countUnsent()` / `oldestUnsentCreatedAt()` vs
+  `selectDueForSend`).
 - `purge_after = sent_at + retention` (7 days, per environment, RF-36); a pruning
   job deletes the file from the volume and moves the state to `PURGED` (the
   record stays until the DB retention).
@@ -278,17 +293,23 @@ stateDiagram-v2
 - The registry has **no** uniqueness constraint on `(user_id, user_version)` in
   `audit`: `UserAccount` is republished for every event, deduplication is
   downstream (ASS-3, ADR 0009).
+- `idx_case_pending (case_state, created_at)` also backs the WP8 live gauge
+  `gsa_cases_by_state{case_state}` (one `COUNT(*) WHERE case_state = ?` per
+  `CaseState` on every scrape). Because `case_record` is partitioned, that
+  count is an index scan across every partition, not a single-partition probe
+  — accepted at the 30-day retention window. `gsa_registry_size{entity}` is a
+  plain PK count on `anag_user` / `anag_account`, no dedicated index needed.
 
 ## Partitioning and retention
 
 | Table | Retention | Mechanism (MySQL 8.0) |
 |---|---|---|
 | `anag_user`, `anag_account` | permanent | it is the registry state (RNF-13) |
-| `orphan_movement` | 7 days from `RESOLVED` / `EXPIRED` (per environment) | scheduled batch `DELETE`; low volume, no partitioning |
-| `case_record` | **30 days** (per environment) | `PARTITION BY RANGE (TO_DAYS(created_at))`, daily partition, `ALTER TABLE case_record DROP PARTITION` for the expired partitions |
-| `report_file` | **30 days** (per environment) | scheduled batch `DELETE`; low volume, no partitioning |
-| `audit` | **30 days** (per environment) | `PARTITION BY RANGE COLUMNS (published_date)` (generated `DATE(published_at)` column), daily partition, `ALTER TABLE audit DROP PARTITION`. At 100 msg/s ≈ 8.6 M rows/day |
-| XML files on the volume | **7 days** after `SENT` (per environment) | pruning → `report_file.state = 'PURGED'` (RF-36, RNF-18) |
+| `orphan_movement` | 7 days from `RESOLVED` / `EXPIRED` (per environment) | **not yet implemented** (WP8 gap, see below); `gsa.datasource.orphan-movement-retention-days` exists, unused |
+| `case_record` | **30 days** (per environment) | `PARTITION BY RANGE (TO_DAYS(created_at))`, daily partition, `ALTER TABLE case_record DROP PARTITION` for the expired partitions, Batch-15 pre-check |
+| `report_file` | **30 days** (per environment) | **not yet implemented** (WP8 gap, see below); `gsa.datasource.report-file-metadata-retention-days` exists, unused |
+| `audit` | **30 days** (per environment) | `PARTITION BY RANGE COLUMNS (published_date)` (generated `DATE(published_at)` column), daily partition, `ALTER TABLE audit DROP PARTITION`, unconditional (no state to preserve). At 100 msg/s ≈ 8.6 M rows/day |
+| XML files on the volume | **7 days** after `SENT` (per environment) | pruning → `report_file.state = 'PURGED'` (RF-36, RNF-18), implemented in `ReportRunner` |
 
 - The **30-day** retention for `audit` and `case_record` is a **technical
   decision** confirmed (AD-retention-audit-window, Batch 12), not a business
@@ -300,12 +321,64 @@ stateDiagram-v2
   pre-check before `DROP PARTITION`.** The `case_record` pruning job, before
   dropping a partition, verifies it contains no rows with `case_state <>
   'REPORTED'`; if it does, it **skips** the drop of that partition and emits an
-  alert. Strict guarantee: no case record deleted before it is sent to the Vault.
-  The implementation of the check is up to `adapter-dev`; `audit` does not have
-  this constraint (no state to preserve) and uses a direct `DROP PARTITION`.
+  alert (`CASE_RECORD_PARTITION_RETAINED`, `gsa_partition_drop_skipped_total`).
+  Strict guarantee: no case record deleted before it is sent to the Vault.
+  `audit` does not have this constraint (no state to preserve) and uses a direct
+  `DROP PARTITION`.
+
+### The maintenance job (WP8, `inbound/schedule/PartitionMaintenanceRunner`)
+
+Implemented as one `@Scheduled` tick (default every `gsa.partition-maintenance.interval`,
+6h), guarded by its own MySQL application lock (`gsa.partition-maintenance.lock-name`,
+distinct from the report-runner lock so the two jobs never serialise on each
+other). Per tick, for both `audit` and `case_record`:
+
+1. **Pre-create** the daily partitions missing up to `gsa.partition-maintenance.future-partitions-ahead-days`
+   days ahead (`ALTER TABLE … REORGANIZE PARTITION p_future INTO (…)`),
+   incrementing `gsa_partitions_provisioned_total{table}`.
+2. **Drop** the partitions whose every row is past the table's retention window
+   (`gsa.datasource.audit-retention-days` / `case-record-retention-days`),
+   incrementing `gsa_partitions_dropped_total{table}` — with the Batch-15
+   pre-check on `case_record` described above (a skip increments
+   `gsa_partition_drop_skipped_total{table}` instead and is retried on the next
+   tick).
+
+**Partition-name convention is load-bearing.** The planner derives a partition's
+exclusive upper bound from its **name** (`p_YYYY_MM_DD`, `p_before_*`, `p_future`),
+not from `information_schema.partition_description` — the raw description
+differs in shape between `audit` (a date literal, `RANGE COLUMNS`) and
+`case_record` (a `TO_DAYS(...)` integer, plain `RANGE`). This ties the job to the
+naming convention already used by `V1__schema.sql`.
+
+**No back-fill.** If the job is down for a long stretch, it does **not**
+retroactively create the missed daily partitions: creation resumes from
+`max(existing frontier, today)`. Rows written during the gap land in the
+catch-all `p_future` partition — still fully queryable, just not split into a
+dedicated daily partition (so they are not individually droppable until
+`p_future` is next reorganized). No data is lost; the job is self-healing once
+it runs again. This is a deliberate implementation choice, not a defect.
+
+**Known gap — `orphan_movement` and `report_file` retention (WP8, out of the
+implemented scope).** The `@ConfigurationProperties` keys
+(`gsa.datasource.orphan-movement-retention-days` = 7,
+`gsa.datasource.report-file-metadata-retention-days` = 30) exist but nothing
+reads them: no batch-`DELETE` job runs for either table yet. Both tables are
+small relative to `audit`/`case_record` and are not partitioned, so the growth
+is bounded but not zero. Flagged for a follow-up work package, not part of this
+documentation pass's scope to design further.
 
 ## Verifiable criteria (for the testers)
 
+- **Not black-box observable as such.** "The offset is committed only after
+  both [publish and audit]" cannot be asserted from outside the process: there
+  is an inherent race between an external inspection of the consumer group's
+  committed offset and the adapter's own commit, so a black-box probe can only
+  ever observe "eventually consistent", not "strictly after". It is covered
+  in-JVM instead (`RegistryFlowIT`, white-box on the actual commit sequence).
+  For the chaos scenarios, "offsets stayed still" should be read as "did not
+  advance further from a sampled point after the freeze", not "equal to the
+  exact pre-outage value" — the adapter can be mid-way through draining a
+  backlog when the dependency under test stops responding.
 - Two registry events for the same `userId` with `version` 5 then 3: after the
   second, `anag_user.last_version` is still 5; two `UserAccount` messages have
   been published.
@@ -325,3 +398,8 @@ stateDiagram-v2
 
 > Updated 2026-09-04: MySQL 8.0 retarget from PostgreSQL (documents only; the SQL
 > scripts are produced by `adapter-dev`).
+>
+> Updated post-M9 (2026-09-11, WP8/WP9): documented the implemented
+> `PartitionMaintenanceRunner` job (§Partitioning and retention), the
+> `orphan_movement`/`report_file` retention gap, and the black-box
+> observability limits of the "offset committed only after" criterion.

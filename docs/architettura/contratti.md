@@ -193,9 +193,14 @@ The consumers of the destination cluster (unidentified) **MUST**:
 
 ## 5. XML report — XSD boundaries
 
-The **versioned XSD** is a separate deliverable in `docs/report-xml/` (RF-17,
-DA-report-xsd). The architecture fixes its boundaries; the detail belongs to
-whoever produces the XSD.
+The **versioned XSD** is a separate deliverable in
+[`docs/report-xml/`](../report-xml/README.md) (RF-17, DA-report-xsd):
+[`case-report-v1.xsd`](../report-xml/case-report-v1.xsd),
+[`sample-case-report.xml`](../report-xml/sample-case-report.xml) and a README.
+Confirmed by the user as-is (2026-09-06 confirm-gate, WP7): no change to the six
+judged points, including that `processingId` is **not** in the report (strict
+adherence to the boundaries below). The architecture fixes those boundaries; the
+detail belongs to whoever produces the XSD.
 
 - Namespace: `urn:generic-service-adapter:case-report:v1`.
 - Root `<caseReport>` with:
@@ -211,7 +216,14 @@ whoever produces the XSD.
 - `rawPayload`: **full original JSON payload** as a **text element with full XML
   escaping** (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&apos;`) — **not** in `CDATA`
   (AD-xsd-rawpayload-encoding, Batch 12; supersedes the "CDATA" part of
-  AD-xsd-shape). A `maxBytes` attribute declares the applied size limit (RF-34).
+  AD-xsd-shape). A required `maxBytes` attribute (`xs:positiveInteger`) declares
+  the size cap **in UTF-8 bytes**, applied to the payload **before** XML
+  escaping (RF-34): a payload longer than `maxBytes` is truncated by the
+  producer to that many UTF-8 bytes (never splitting a multi-byte character)
+  before the escaping step, so the post-escaping element text can be longer than
+  `maxBytes` characters — `maxBytes` bounds the *source* payload the producer
+  read, not the serialized XML text. `maxBytes` is always present and always
+  carries the configured cap, whether or not truncation actually happened.
   **No** PII masking in the report (ADR
   [0019](adr/0019-pii-in-chiaro-nei-report.md)).
 - The file sent to the Vault is named `report-<uuid>.xml`, where `<uuid>` is

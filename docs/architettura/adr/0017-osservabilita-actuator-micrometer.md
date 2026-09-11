@@ -7,8 +7,9 @@
 
 RNF-07 / RF-22 require health checks (liveness/readiness) and the §6.3 metrics
 (volume, lag, latency, errors per category, case records per state, Vault queue,
-enum warning, registry size, audit rows). **Actuator is not in `pom.xml`.** They
-are **new dependencies**.
+enum warning, registry size, audit rows). At the time this ADR was first
+accepted, Actuator was not yet in `pom.xml`; it was added in WP0/WP8 as planned
+here.
 
 ## Decision
 
@@ -21,6 +22,17 @@ are **new dependencies**.
 - Alerts (per-environment thresholds) on lag, backlog age, case-record rate, age
   of the oldest unsent XML file, `report_file` queue length, back-pressure
   active, orphans discarded (RF-23).
+- **`gsa_consumer_lag` and `gsa_backlog_age_seconds` are implemented "native",
+  with no `AdminClient` call** (WP8 decision batch, 2026-09-06 §4): lag is
+  re-exposed from the `records-lag` metric that `kafka-clients` already
+  publishes per assigned topic-partition (a `@Scheduled` sweep of
+  `KafkaListenerEndpointRegistry`'s containers into a shared map,
+  `ConsumerLagMetrics`); backlog age is `now − timestamp of the last record
+  consumed on that topic`, recorded by a `RecordInterceptor` shared by the
+  source and retry listener factories (`InboundTrafficMetrics`). Backlog age
+  grows unbounded while a topic is idle — no new record ever resets it — which
+  is intentional: a rising age at zero lag means the upstream has gone quiet,
+  itself worth alerting on.
 
 ## Alternatives considered
 
@@ -39,3 +51,10 @@ are **new dependencies**.
 - **Constrains downstream:** `adapter-dev` adds the dependencies and instruments
   the code with the `gsa_*` metrics; `devops` configures scrape and alerting and
   restricts access to the management endpoint.
+
+> Updated post-M9 (2026-09-11, WP8): recorded that `gsa_consumer_lag` /
+> `gsa_backlog_age_seconds` are implemented off existing kafka-clients metrics
+> and a shared `RecordInterceptor`, with no `AdminClient` call — an
+> implementation detail, not a change to the Decision. The full, exhaustive
+> `gsa_*` metric list (28 series as of WP9) lives in [`nfr.md`](../nfr.md)
+> §Observability, not duplicated here.

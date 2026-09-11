@@ -73,7 +73,8 @@ retention, greater than `holdTimeout` and than the maximum E7 retry duration).
 | `acks` | `all` | RNF-03 |
 | `max.in.flight.requests.per.connection` | `<= 5` | per-partition ordering with idempotence |
 | `retries` | high (idempotent default) | absorbs network blips, not E6 |
-| Send | synchronous `send().get()` before the offset ack | RF-11, ADR 0008 |
+| `max.block.ms` / `request.timeout.ms` / `delivery.timeout.ms` | per-environment (dev/e2e `10s/10s/30s`, prod `15s/15s/120s`), `delivery.timeout.ms >= linger.ms + request.timeout.ms` | bound `send()` against an unreachable destination so it fails fast into `E6` instead of blocking the listener thread indefinitely (ADR 0007, `gsa.kafka.destination.*`) |
+| Send | synchronous `send().get(publishTimeout)` before the offset ack — `publishTimeout` is a publisher-side backstop strictly above `delivery.timeout.ms` | RF-11, ADR 0008, ADR 0007 |
 | Serialization | `KafkaProtobufSerializer` + Schema Registry, `TopicNameStrategy`, `BACKWARD` compat | RF-37, ADR [0015](adr/0015-schema-registry-subject-compat.md) |
 | Key | `userId` (`UserAccount`) / `accountId` (`WalletMovement`) | RF-10 |
 
@@ -92,8 +93,8 @@ flowchart TD
     PROC -->|"E6 unreachable destination"| BP["BACK-PRESSURE<br/>pause of all listeners, no commit, DEST_CLUSTER_DOWN alert"]
 
     PROC -->|"E7 internal error (and E3 when active)"| RT["adapter publishes to *.retry.0 (source cluster)<br/>headers carry category / attempt / backoff / process-after"]
-    RT --> RTN["inbound/retry applies a non-blocking delay, then re-attempts<br/>*.retry.1 ... *.retry.N (increasing delay)"]
-    RTN -->|"attempt succeeded"| PUB
+    RT --> RTN["inbound/retry: nack(Duration) delays the whole gsa-retry consumer, then re-attempts<br/>*.retry.1 ... *.retry.N (increasing delay)"]
+    RTN -->|"attempt succeeded"| RTPUB["publish confirmed then RegistryCommit / MovementCommit<br/>(CAS+merge+audit, or dedup+audit) then ack - same post-publish write as PUB, no case_record"]
     RTN -->|"maxAttempts exceeded"| CASE7["case_record (E7/E3) written by inbound/retry + alert"]
 
     PROC -->|"E4 orphan movement"| ORPH["INSERT orphan_movement, hold_deadline = now + holdTimeout<br/>ack offset, partition free"]

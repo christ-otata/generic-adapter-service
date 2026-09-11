@@ -63,12 +63,26 @@ For `E3` / `E7` the adapter performs **explicit manual retry routing**. No
   partition always advances (RF-12).
 - **`inbound/retry` listener** on `<sourceTopic>.retry.*` (consumer group
   `gsa-retry`, ADR 0004). For each delivery it honours the `process-after` header
-  with a **non-blocking delay**: partition pause / resume through Spring Kafka's
-  back-off primitives (`KafkaConsumerBackoffManager` / partition-pausing
-  back-off), used **without** the `@RetryableTopic` annotation and **without**
-  `Thread.sleep`. When the delay has elapsed it re-runs mapping + publish (the
-  same `inbound/common` + `mapping` + publisher as the live path):
-  - success → done, no `case_record`;
+  with a **non-blocking delay**: `Acknowledgment.nack(Duration)` — Spring Kafka's
+  own back-off primitive, used **without** the `@RetryableTopic` annotation and
+  **without** `Thread.sleep`. It re-seeks the record and pauses the **whole
+  `gsa-retry` consumer** (every retry partition it holds, not a single one) for
+  the remaining delay, keeping the poll loop alive (heartbeats) until the wake
+  time passes. This is a **deliberate deviation** from an earlier
+  "per-partition pause/resume" framing: `gsa-retry` does nothing but delayed
+  reprocessing, so a whole-consumer pause during one record's backoff has no
+  practical throughput cost and avoids the lifecycle-lock fragility of a manual
+  per-partition `ListenerContainerPauseService`. When the delay has elapsed it
+  re-runs mapping + publish (the same `inbound/common` + `mapping` + publisher
+  as the live path):
+  - success → **mirrors the live path's post-publish persistence** (ADR 0008,
+    RF-29), not just an ack: a routed registry event goes through
+    `RegistryCommit` (the same `anag_user` CAS, conditional `accounts[]` merge
+    and `audit` INSERT as the live orchestrator); a routed movement re-checks
+    the pre-publish `movementAlreadyRecordedToday` dedup and, if not already
+    recorded today, goes through `MovementCommit` for the `audit` INSERT. Only
+    after that local transaction commits does the listener ack. No
+    `case_record` on success;
   - failure with `attempt + 1 < maxAttempts` → publish to
     `<sourceTopic>.retry.<attempt+1>` with the next backoff;
   - failure with `attempt + 1 == maxAttempts` → the retry listener **itself**
@@ -121,7 +135,8 @@ For `E3` / `E7` the adapter performs **explicit manual retry routing**. No
 - **+** No framework DLT; no `RetryTopicConfiguration` subclass stack to realign
   on every Spring Kafka upgrade.
 - **−** The backoff-aware, non-blocking delay in `inbound/retry` is application
-  code the team owns and tests (partition pause / resume, not `Thread.sleep`).
+  code the team owns and tests (`Acknowledgment.nack(Duration)`, a whole-consumer
+  pause — not `Thread.sleep`, not a per-partition pause).
 - **−** The per-category routing and the exhaustion `case_record` are application
   code, not configuration.
 - **−** A source-cluster `KafkaTemplate<String, byte[]>` (raw-bytes producer) is
@@ -136,3 +151,13 @@ For `E3` / `E7` the adapter performs **explicit manual retry routing**. No
     properties — **not** a `RetryTopicConfiguration`.
   - the downstream consumers MUST stay idempotent on `transaction_id` (ADR 0009):
     retried messages can arrive out of order.
+
+> Updated post-M9 (2026-09-11, WP6): corrected two implementation details
+> against the actual code — the non-blocking delay is
+> `Acknowledgment.nack(Duration)` pausing the **whole** `gsa-retry` consumer,
+> not a per-partition pause/resume as originally worded; and a retry success
+> is the **same post-publish persistence as the live path**
+> (`RegistryCommit`/`MovementCommit`), not merely an ack with no DB write.
+> Neither changes the Decision (no `@RetryableTopic`, manual routing, `gsa-retry`
+> listener, no `.dlt`) — both were drafting imprecisions caught once the code
+> existed.

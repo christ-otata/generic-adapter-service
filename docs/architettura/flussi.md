@@ -320,6 +320,8 @@ sequenceDiagram
     participant LR as inbound/retry (backoff listener, group gsa-retry)
     participant MVP as Publisher
     participant KD as Kafka destination
+    participant RMC as RegistryCommit / MovementCommit
+    participant AUD as AuditStore
     participant CST as CaseStore
     participant AL as Alerting
 
@@ -328,11 +330,16 @@ sequenceDiagram
     L->>L: ack main offset (partition advances — RF-12)
     loop attempt = 0..maxAttempts-1
         RT->>LR: delivery from *.retry.(attempt)
-        LR->>LR: non-blocking delay until process-after, partition pause then resume, no Thread.sleep
+        LR->>LR: honour process-after with Acknowledgment.nack(Duration) - pauses the whole gsa-retry consumer, not a single partition, no Thread.sleep
         LR->>MVP: re-run mapping + publish, same inbound/common + mapping + publisher as the live path
         alt publish OK
             MVP->>KD: WalletMovement / UserAccount
-            KD-->>LR: publish confirmed, done, no case_record
+            KD-->>LR: publish confirmed
+            Note over LR,AUD: mirrors the live path post-publish persistence (ADR 0008, RF-29) - one local DB tx opened only now
+            LR->>RMC: registry event - CAS anag_user (naturally idempotent) + accounts merge + audit INSERT (USER_ACCOUNT)
+            LR->>RMC: movement - pre-publish dedup already checked, audit INSERT (WALLET_MOVEMENT)
+            RMC-->>LR: committed
+            LR->>RT: ack, no case_record
         else still failing, attempt+1 less than maxAttempts
             LR->>RT: publish to *.retry.(attempt+1) with the next backoff
         else attempt+1 = maxAttempts
@@ -348,9 +355,28 @@ cluster through a dedicated source-cluster `byte[]` `KafkaTemplate`, then acks t
 main offset (RF-12). The error category, the attempt number, the per-category
 backoff profile and the `process-after` timestamp travel as message headers
 (retry-topic names and count unchanged, ADR 0004). The `inbound/retry` listener
-applies the delay as a **non-blocking partition pause / resume** (Spring Kafka
-back-off primitives, no `Thread.sleep`) before each re-attempt, then re-runs
-mapping + publish. On the last attempt the `inbound/retry` listener writes the
+honours the delay with Spring Kafka's `Acknowledgment.nack(Duration)`: it
+re-seeks the record and pauses the **entire `gsa-retry` consumer** (not a single
+partition — `nack(Duration)` is a whole-container primitive) for the remaining
+delay, keeping the poll loop alive (heartbeats, no `Thread.sleep`) until the wake
+time passes, then re-runs mapping + publish. This is a deliberate, documented
+deviation from an earlier "per-partition pause/resume" description: `gsa-retry`
+does nothing but delayed reprocessing, so pausing the whole consumer for one
+record's backoff has no practical cost, and the primitive is far simpler than a
+manual per-partition pause. The trade-off: a long backoff on one record delays
+the rest of the `gsa-retry` work behind it too.
+
+A **retry success is not just an ack.** On a confirmed re-publish the listener
+mirrors the live orchestrators' post-publish persistence exactly (ADR 0008,
+RF-29): for a routed registry event it calls `RegistryCommit` — the same `anag_user`
+CAS (`WHERE last_version < :incoming`, naturally idempotent if the live path or
+an earlier attempt already advanced it), the conditional `accounts[]` merge and
+the `audit` INSERT; for a routed movement it re-checks the pre-publish
+`movementAlreadyRecordedToday` dedup (a same-day replay is skipped, no second
+publish, no second `audit` row, `gsa_movements_skipped_total{reason=same_day_replay}`)
+and otherwise calls `MovementCommit` for the `audit` INSERT. Only after that
+local transaction commits does the listener ack — no `case_record` is written on
+success. On the last attempt the `inbound/retry` listener writes the
 `case_record` **itself** — no framework recoverer, no `.dlt` (ADR 0005). The
 order of messages that went through the retry topics is not guaranteed (RF-30,
 absorbed by downstream idempotence).
@@ -359,8 +385,10 @@ absorbed by downstream idempotence).
 
 - An `E7` that does not resolve within `maxAttempts` → one `case_record`
   `error_category=E7 attempts=maxAttempts`; the main partition never blocked.
-- An `E7` that resolves on the 2nd attempt → the message is published once, no
-  `case_record`.
+- An `E7` that resolves on the 2nd attempt (**"E7 healing"**) → the message is
+  published exactly once, no `case_record`, **and** the same post-publish write
+  as the live path: one `audit` row (plus, for a registry event, the `anag_user`
+  CAS applied if the version is still the latest).
 
 ## g) XML report generation and send
 
@@ -371,7 +399,9 @@ sequenceDiagram
     participant LK as MySQL GET_LOCK lock per tick
     participant RA as ReportAssembler
     participant CST as CaseStore
-    participant RFS as ReportFileStore (JDBC + filesystem)
+    participant RFC as ReportFileContentStore (filesystem)
+    participant RMC as ReportRunnerCommit (tx boundary)
+    participant RFS as ReportFileStore (JDBC, metadata)
     participant RSK as ReportSink (RestClient)
     participant V as Vault (HTTP REST)
     participant AL as Alerting
@@ -381,26 +411,33 @@ sequenceDiagram
     alt lock not acquired (another replica active)
         LK-->>SCH: skip this tick
     else lock acquired
-        SCH->>RA: generate report
+        SCH->>RA: assemble()
         RA->>CST: SELECT case_record WHERE case_state = PENDING_REPORT
         CST-->>RA: list + raw_payload
-        RA->>RA: create report_file.id UUID and header with window, environment, version, counts per errorCategory and per sourceTopic
-        RA->>CST: UPDATE case_state = IN_REPORT, report_file_id = :id  (WHERE case_state = PENDING_REPORT)
-        RA->>RFS: write file report-{uuid}.xml (XML-escaped rawPayload, maxBytes), INSERT report_file (state=PENDING_SEND)
+        RA->>RA: create report_file.id UUID and header with window, environment, version, counts per errorCategory and per sourceTopic — build the XML (rawPayload XML-escaped, truncated to maxBytes UTF-8 bytes before escaping)
+        RA-->>SCH: AssembledReport (xml bytes + claimed case keys), no DB write yet
+        SCH->>RFC: write report-{uuid}.xml to the spool, outside any DB transaction
+        SCH->>RMC: persistAssembly(assembled)
+        RMC->>CST: UPDATE case_state = IN_REPORT, report_file_id = :id  (WHERE case_state = PENDING_REPORT)
+        RMC->>RFS: INSERT report_file (state=PENDING_SEND)
+        RMC-->>SCH: one local tx committed - the XML was already on disk before this transaction opened
         SCH->>RFS: SELECT report_file not SENT with next_attempt_at due  (created_at order)
         loop for each report_file in the queue
             SCH->>RSK: send file
             RSK->>V: HTTP POST report-{uuid}.xml
             alt 2xx response
                 V-->>RSK: 2xx
-                RSK->>RFS: report_file.state = SENT, sent_at = now, purge_after = now + retention
-                RSK->>CST: UPDATE case_state = REPORTED WHERE report_file_id = :id (RF-21)
+                RSK-->>SCH: SENT
+                SCH->>RMC: markSent(id, sentAt, purgeAfter)
+                RMC->>RFS: report_file.state = SENT, sent_at = now, purge_after = now + retention
+                RMC->>CST: UPDATE case_state = REPORTED WHERE report_file_id = :id (RF-21)
             else non-2xx / timeout
                 V-->>RSK: error
-                RSK->>RFS: attempts++, next_attempt_at = now + backoff (RF-19)
-                RSK->>CST: case records stay IN_REPORT (no state rollback)
+                RSK-->>SCH: RETRYABLE_FAILURE
+                SCH->>RFS: attempts++, next_attempt_at = now + backoff (RF-19)
+                Note over SCH,CST: case records stay IN_REPORT, no state rollback
                 opt queue too long or oldest file past maximum age
-                    RSK->>AL: alert
+                    SCH->>AL: WARN log REPORT_QUEUE_BACKLOG (no separate gauge)
                 end
             end
         end
@@ -410,10 +447,29 @@ sequenceDiagram
 
 **Caption.** Only one runner active at a time (MySQL application lock `GET_LOCK`,
 acquired and released **within the same tick** on the same connection: the MySQL
-lock is per-connection). Case records move to `IN_REPORT` on file creation and to
-`REPORTED` **only** after `2xx`; on failure they stay `IN_REPORT` and the **same**
-`report_file` (same `id` = same file name) is retried, so the Vault receives no
-duplicates (RF-20).
+lock is per-connection). `ReportRunner` itself does the non-DB I/O (spool-file
+write, HTTP `POST`) and is never `@Transactional`; `ReportRunnerCommit` is the
+**separate bean** that owns both local DB transactions (ADR 0008, mirrors
+`OrphanReprocessorCommit`): `persistAssembly` claims the batch (`PENDING_REPORT
+→ IN_REPORT` + `report_file_id`) and inserts the `report_file` row **after** the
+XML is already on the volume, and `markSent` flips `report_file → SENT` plus the
+case records `→ REPORTED`, only after a Vault `2xx` (RF-21). On failure case
+records stay `IN_REPORT` and the **same** `report_file` (same `id` = same file
+name) is retried, so the Vault receives no duplicates (RF-20).
+
+**Operational note — the send queue and the backlog alert only advance on a
+tick.** Both the durable send-queue drain (`sendDueReports`) and the backlog
+alert (`maybeAlertOnBacklog`) run inside `runTick()`, and a tick only happens on
+the 15-min schedule or when `thresholdTick()` sees `PENDING_REPORT ≥ threshold`
+(RF-33). That threshold check counts only `case_state = PENDING_REPORT` rows:
+once a batch has been claimed into `IN_REPORT` by `persistAssembly`, the count
+drops back under threshold and the early trigger goes quiet again. So a Vault
+outage that starts right after a batch was claimed, with no further case
+records arriving, is not re-evaluated — no retry attempt, no updated backlog
+alert — until the next 15-minute schedule tick. This is a real operational
+characteristic of RF-33 as implemented, not a defect; `test-e2e` scenarios that
+assert "nothing changes for N minutes while Vault is down" should pick N inside
+one schedule interval, not across one.
 
 **Verifiable criteria.**
 

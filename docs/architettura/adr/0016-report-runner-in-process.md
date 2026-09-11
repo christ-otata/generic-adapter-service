@@ -24,7 +24,9 @@ schedulers would produce duplicate reports.
   (both per environment).
 - **Durable send queue**: the `report_file` rows with `state <> 'SENT'`; on each
   tick those with `next_attempt_at <= now()` are sent in `created_at` order;
-  `RetryTemplate` for the single attempt; `attempts` and `next_attempt_at`
+  an explicit blocking retry loop for the single attempt (`gsa.vault.max-attempts`,
+  exponential backoff between `backoff-initial` and `backoff-max` via
+  `Thread.sleep` — see the note below); `attempts` and `next_attempt_at`
   updated on failure. Alert on queue length/age.
 - **HTTP client**: Spring `RestClient` (no new dependency).
 - **Transfer id**: `report_file.id` (UUID) generated at the `PENDING_REPORT →
@@ -71,3 +73,16 @@ schedulers would produce duplicate reports.
 > `RELEASE_LOCK`, **per-tick** and per-connection. Everything else (15-min trigger
 > + 500 threshold, durable `report_file` queue, UUID transfer id, `RestClient`)
 > is unchanged.
+>
+> Updated post-M9 (2026-09-11, WP7): the single-send retry is a **hand-written
+> blocking loop** (`Thread.sleep` between attempts), not `spring-retry`'s
+> `RetryTemplate` as originally decided here — `spring-retry` never landed on
+> the classpath, and a blocking sleep is legal because `VaultReportSink.send()`
+> runs on the `ReportRunner` `@Scheduled` thread, not a Kafka listener thread.
+> Same retry *policy* (`gsa.vault.max-attempts`, exponential backoff between
+> `backoff-initial` and `backoff-max`); different implementation mechanism. Also:
+> two **separate** ports back `report_file` storage —
+> `ReportFileStore` (metadata, JDBC) and `ReportFileContentStore` (XML bytes,
+> filesystem) — rather than one port with two adapters, to avoid forcing
+> disjoint method sets onto a single interface (see
+> [`componenti.md`](../componenti.md)).
